@@ -1,0 +1,54 @@
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Node / Bun
+node_modules/
+bun.lockb
+bun.lock
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# TypeScript / build
+*.tsbuildinfo
+dist/
+build/
+
+# Project artifacts (whisper.cpp source + downloaded models — recreate via 'bun run setup')
+vendor/
+models/
+*.wav
+
+# Test / coverage
+coverage/
+.nyc_output/
+*.log
+
+# npm pack artifacts
+*.tgz
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Personal audio files (not committed)
+*.m4a
+
+# Transcript outputs (regenerable; may contain personal content)
+PRD*.txt
+PRD*.srt
+PRD*.vtt
+PRD*.json
+
+# Claude Code session state
+.claude/

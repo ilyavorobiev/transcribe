@@ -1,0 +1,21 @@
+{
+  "name": "transcriber",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "transcribe": "./src/cli.ts"
+  },
+  "scripts": {
+    "transcribe": "bun run src/cli.ts",
+    "test": "bun test src",
+    "typecheck": "bunx tsc --noEmit",
+    "setup": "bash scripts/setup-mlx.sh",
+    "setup:cpp": "bash scripts/setup.sh",
+    "install:bin": "bash scripts/install.sh"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  }
+}
