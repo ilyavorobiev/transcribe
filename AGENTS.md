@@ -1,36 +1,49 @@
 # transcriber — agent instructions
 
 Personal CLI tool: offline transcription of iPhone `.m4a` voice memos (Russian
-by default). Two backends, unified behind a single CLI:
+by default). **Three backends**, unified behind a single CLI; the default is
+**mlx** because in our benchmarks it produced the most readable Russian
+output. Engine choice and language are independent.
 
 - **mlx** (default) — Apple Silicon native via
   [`mlx-whisper`](https://github.com/ml-explore/mlx-examples/tree/main/whisper).
-  Loads HuggingFace models directly; defaults to
+  Multilingual; defaults to
   [`antony66/whisper-large-v3-russian`](https://huggingface.co/antony66/whisper-large-v3-russian)
-  for ~35% lower WER on Russian than stock large-v3.
+  for `--language ru`, stock `large-v3` otherwise.
 - **cpp** — [`whisper.cpp`](https://github.com/ggml-org/whisper.cpp) built
   from source with Metal. Offline-strict, no Python, richer VAD knobs,
-  cross-platform-friendly. Use when MLX defaults don't fit.
+  cross-platform-friendly. Use when you specifically need it.
+- **gigaam** — Sber
+  [`GigaAM-v3`](https://huggingface.co/ai-sage/GigaAM-v3) Conformer
+  pretrained on 700,000 hrs of Russian. Russian-only. Native Latin-char
+  output for "MCP" / "API". Strong CV-ru benchmarks (~5× lower WER than
+  stock Whisper) but on our real 48-min PRD memo did **not** clearly beat
+  antony66 — similar acronym preservation, single-paragraph output is less
+  readable. Opt-in via `--engine gigaam`. Useful as a 2nd-opinion engine
+  and for the planned LLM post-correction step.
 
 Bun + TypeScript. macOS only. Single binary: `transcribe`.
 
 ## First time on this repo
 
 1. `bun install` — installs `@types/bun` and `typescript`. Fast.
-2. `bun run setup` — **one-shot install of everything**: both engines,
+2. `bun run setup` — **one-shot install of everything**: all three engines,
    all default models, conversions. Idempotent; safe to re-run.
-   - Disk: ~16 GB. Time: ~10–20 min depending on network.
+   - Disk: ~20 GB. Time: ~15–30 min depending on network.
    - Installs Homebrew deps (`uv`, `ffmpeg`, `cmake`, `git`).
    - Installs `mlx-whisper` into an isolated `uv tool` venv.
    - Clones + builds `whisper.cpp` with Metal.
    - Downloads `ggml-large-v3.bin` (~3.1 GB) + Silero VAD (~1 MB) for cpp.
-   - Downloads + converts `antony66/whisper-large-v3-russian` (default).
+   - Downloads + converts `antony66/whisper-large-v3-russian`.
    - Downloads + converts `bond005/whisper-podlodka-turbo`.
+   - Warms uv venv for `gigaam_transcribe.py` (torch + transformers ~3 GB)
+     and pre-fetches `ai-sage/GigaAM-v3` (~1 GB).
    - When it finishes, the next command can be `bun run transcribe …`.
 3. Skips for narrow setups:
-   - `bash scripts/setup-all.sh --no-cpp`     — MLX only (~12 GB)
-   - `bash scripts/setup-all.sh --no-bond005` — antony66 only (~10 GB)
-   - `bash scripts/setup-all.sh --no-mlx`     — cpp only (~4 GB)
+   - `bash scripts/setup-all.sh --no-gigaam`  — skip GigaAM (~16 GB)
+   - `bash scripts/setup-all.sh --no-cpp`     — skip cpp (~17 GB)
+   - `bash scripts/setup-all.sh --no-bond005` — skip bond005 (~14 GB)
+   - `bash scripts/setup-all.sh --no-mlx`     — skip mlx + bond005 (~10 GB)
    - `bun run setup:mlx` / `bun run setup:cpp` — single engine, explicit
 4. `bun run typecheck && bun test` — should pass without any setup having run
    (tests are pure; they don't spawn ffmpeg/whisper/mlx_whisper).
@@ -95,41 +108,50 @@ bun run install:bin                     # write ~/.local/bin/transcribe shim
 
 ## When to use which engine
 
-| Recording type                     | --engine | --model           |
-| ---------------------------------- | -------- | ----------------- |
-| Russian only (primary use)         | mlx      | antony66-russian (default) |
-| Russian + English acronyms         | mlx      | bond005-turbo     |
-| English / other languages          | mlx      | large-v3          |
-| Air-gapped / version-pinned        | cpp      | large-v3          |
-| No Python in stack                 | cpp      | large-v3          |
-| Cross-platform (future Linux/Win)  | cpp      | large-v3          |
+| Recording type                          | --engine        | --model           |
+| --------------------------------------- | --------------- | ----------------- |
+| Russian (with or without acronyms)      | mlx (default)   | antony66-russian (auto for `--language ru`) |
+| Russian with heavy ru+en code-switching | mlx             | bond005-turbo     |
+| English / German / French / etc.        | mlx (default)   | large-v3 (auto for `--language ≠ ru`)        |
+| Russian, second-opinion / future LLM-vote | gigaam        | gigaam-v3 (auto)  |
+| Air-gapped / version-pinned             | cpp             | large-v3          |
+| No Python in stack                      | cpp             | large-v3          |
+
+Default engine is **mlx**. `--model` defaults are language-aware for mlx
+(`ru` → antony66-russian, else → large-v3). Pass `--engine gigaam` or
+`--engine cpp` to switch backends; `--model` to override per-engine defaults.
 
 ## Layout
 
 ```
 src/
-  cli.ts            # entry, arg parsing, --engine dispatch
-  audio.ts          # ffmpeg preprocessor (used only by cpp engine)
-  paths.ts          # binary / model resolution (WHISPER_BIN, WHISPER_MODEL_DIR)
+  cli.ts            # entry, arg parsing, --engine dispatch, --language auto-routing
+  audio.ts          # ffmpeg preprocessor (used by cpp + gigaam engines)
+  paths.ts          # binary / model resolution (WHISPER_BIN, PROJECT_ROOT)
   engines/
-    types.ts        # Format, EngineName, TranscribeOptions, Engine interface
+    types.ts        # Format, EngineName ("mlx" | "cpp" | "gigaam"), Engine interface
     cpp.ts          # whisper.cpp wrapper + whisperArgv (pure)
     mlx.ts          # mlx-whisper wrapper + mlxArgv + model alias table (pure)
+    gigaam.ts       # GigaAM wrapper (spawns scripts/gigaam_transcribe.py via uv)
     *.test.ts       # colocated engine tests
   *.test.ts         # colocated cli / audio / paths tests
 scripts/
-  setup-mlx.sh      # default — installs uv + mlx-whisper
-  setup.sh          # cpp engine — clones whisper.cpp, builds, downloads model
+  setup-all.sh      # default `bun run setup` — installs everything
+  setup-mlx.sh      # MLX engine only (uv + mlx-whisper + antony66 convert)
+  setup-cpp.sh      # cpp engine only (whisper.cpp + ggml-large-v3 + VAD)
+  convert-hf-to-mlx.sh        # HF Whisper repo → MLX format (reusable)
+  gigaam_transcribe.py        # Python wrapper for GigaAM (PEP 723 inline deps)
   install.sh        # symlink transcribe shim into PATH
 specs/
   README.md         # spec index
   cli/spec.md       # built — local CLI (whisper.cpp era)
   publish/spec.md   # proposed — public npm + GitHub release
   mlx-russian/spec.md  # implemented — MLX engine + Russian fine-tune
+  gigaam/spec.md    # implemented — GigaAM as third engine + auto-routing
 guidelines/
   workflow.md, docs/{spec,prd}.md, roles/{eng,em}.md   # spec/PRD templates
 vendor/             # whisper.cpp checkout + build (gitignored; cpp engine only)
-models/             # downloaded ggml-*.bin files (gitignored; cpp engine only)
+models/             # ggml-*.bin + converted *-mlx/ dirs (gitignored)
 ```
 
 ## Conventions
@@ -162,14 +184,12 @@ models/             # downloaded ggml-*.bin files (gitignored; cpp engine only)
 
 ```
 transcribe <file.m4a> [options]
-  --engine <name>    mlx | cpp                       (default: mlx)
+  --engine <name>    mlx | cpp | gigaam              (default: mlx)
   --model <name>     engine-specific alias or HuggingFace repo id
-                     mlx defaults to antony66-russian
-                     cpp defaults to large-v3
   --format <fmt>     txt | srt | vtt | json | all   (default: txt)
   --output <file>    output file path                (default: <input-stem>.<ext> next to input)
   --language <code>  ISO language code               (default: ru)
-  --prompt <text>    initial prompt for vocabulary biasing
+  --prompt <text>    initial prompt (mlx/cpp only)
   --threads <n>      decoder threads (cpp engine only; default: min(cpus, 8))
   --keep-wav         retain the intermediate 16kHz WAV (cpp engine only)
   -h, --help         show this help
@@ -179,9 +199,21 @@ transcribe <file.m4a> [options]
 extension is stripped and used as a stem; each format appends its own
 extension.
 
-`--keep-wav` and `--threads` are rejected with a clear error if combined
-with `--engine mlx` (mlx_whisper handles audio internally and manages its
-own threading).
+**Engine-specific flag restrictions** (rejected with friendly error if mismatched):
+- `--keep-wav`, `--threads` — cpp engine only
+- `--format srt | vtt | all` — not supported by gigaam v1 (use mlx or cpp)
+- `--prompt` — silently ignored by gigaam (no prompt-biasing API in the model)
+
+**Default model selection** (when `--model` is omitted):
+- `--engine mlx + --language ru` → `antony66-russian` (Russian fine-tune)
+- `--engine mlx + --language <other>` → `large-v3` (stock multilingual)
+- `--engine cpp` → `large-v3`
+- `--engine gigaam` → `gigaam-v3`
+
+Engine and language are independent — there is **no** auto-routing of
+engine based on language. (We tried `ru → gigaam` as the auto-route; on
+real recordings gigaam didn't measurably beat antony66, see
+`specs/gigaam/spec.md`.)
 
 ## Adding work
 
@@ -224,6 +256,20 @@ own threading).
   Russian fine-tunes need the conversion step in
   `scripts/convert-hf-to-mlx.sh`. Symptom of a missed conversion:
   `TypeError: ModelDimensions.__init__() got an unexpected keyword argument '_name_or_path'`.
+- **Don't route non-Russian audio to gigaam.** GigaAM is trained on Russian
+  only and produces gibberish on English/etc. The CLI auto-route on
+  `--language ru` handles this; the only way to get into trouble is to
+  pass `--engine gigaam --language en` explicitly (CLI warns).
+- **Don't try `transcribe_longform()` in `gigaam_transcribe.py`.** It
+  requires `pyannote.audio` + an `HF_TOKEN` with the
+  pyannote/segmentation-3.0 terms accepted. We use simple time-based
+  chunking instead (30 s windows, 2 s overlap) — ~95% of the quality, zero
+  extra setup. If you do switch to pyannote, document the HF_TOKEN
+  requirement in `scripts/setup-all.sh` Section 6.
+- **Don't add SRT/VTT/all output to gigaam without word-level timestamps.**
+  v1 supports `txt` and `json` only; subtitle formats need segment
+  boundaries we don't currently extract. The CLI rejects unsupported
+  format+engine combos at parse time — don't disable that check.
 - **Don't add a third engine without a new `specs/<engine>/spec.md`.** The
   Engine interface is `src/engines/types.ts`; follow the pattern in
   `cpp.ts` / `mlx.ts`. Each engine owns its model alias table.

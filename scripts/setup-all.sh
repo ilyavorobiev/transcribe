@@ -11,15 +11,18 @@
 #   3. whisper.cpp          (clone, build with Metal, get ggml-large-v3 + VAD)
 #   4. antony66 → MLX       (download + convert)
 #   5. bond005 → MLX        (download + convert)
+#   6. GigaAM-v3            (warm uv venv + HF cache for Russian default)
 #
-# Total disk: ~16 GB (less if you skip --no-cpp or --no-bond005).
-# Total time: ~10–20 min depending on download speed.
+# Total disk: ~20 GB (less if you skip --no-cpp / --no-bond005 / --no-gigaam).
+# Total time: ~15–30 min depending on download speed.
 #
 # Flags:
 #   --no-cpp        skip whisper.cpp build + ggml model (saves ~3.5 GB)
 #   --no-bond005    skip bond005 (saves ~6 GB; antony66 is the primary
-#                   Russian model anyway)
-#   --no-mlx        skip MLX entirely (just install cpp + ggml)
+#                   Russian Whisper fine-tune anyway)
+#   --no-mlx        skip MLX entirely (just install cpp + gigaam)
+#   --no-gigaam     skip GigaAM (saves ~4 GB; falls back to mlx + antony66
+#                   for Russian)
 
 set -euo pipefail
 
@@ -28,11 +31,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SKIP_CPP=0
 SKIP_BOND005=0
 SKIP_MLX=0
+SKIP_GIGAAM=0
 for arg in "$@"; do
   case "$arg" in
     --no-cpp)     SKIP_CPP=1 ;;
     --no-bond005) SKIP_BOND005=1 ;;
     --no-mlx)     SKIP_MLX=1 ;;
+    --no-gigaam)  SKIP_GIGAAM=1 ;;
     -h|--help)
       sed -n '2,/^set -euo pipefail/p' "$0" | sed 's/^# \?//;$d'
       exit 0 ;;
@@ -42,10 +47,11 @@ done
 
 # --- Disk-space check --------------------------------------------------------
 
-REQ_GB=16
+REQ_GB=20
 [ "$SKIP_CPP" -eq 1 ] && REQ_GB=$((REQ_GB - 3))
 [ "$SKIP_MLX" -eq 1 ] && REQ_GB=$((REQ_GB - 6))
 [ "$SKIP_BOND005" -eq 1 ] && REQ_GB=$((REQ_GB - 6))
+[ "$SKIP_GIGAAM" -eq 1 ] && REQ_GB=$((REQ_GB - 4))
 
 AVAIL_GB=$(df -k "$ROOT" | tail -1 | awk '{ printf "%d", $4/1024/1024 }')
 echo "==> Disk: ${AVAIL_GB} GB free, ~${REQ_GB} GB needed"
@@ -119,9 +125,9 @@ fi
 # --- Section 5: bond005 (ru+en code-switching) -------------------------------
 
 if [ "$SKIP_MLX" -eq 1 ] || [ "$SKIP_BOND005" -eq 1 ]; then
-  echo "==> Section 5/5: skipping bond005"
+  echo "==> Section 5/6: skipping bond005"
 else
-  echo "==> Section 5/5: bond005/whisper-podlodka-turbo → MLX"
+  echo "==> Section 5/6: bond005/whisper-podlodka-turbo → MLX"
   # Explicit target dir matches the alias `bond005-turbo`. Keep in sync.
   if [ -f "$ROOT/models/bond005-turbo-mlx/weights.safetensors" ]; then
     echo "    already converted: models/bond005-turbo-mlx/"
@@ -132,6 +138,33 @@ else
   fi
 fi
 
+# --- Section 6: GigaAM-v3 (default Russian engine) ---------------------------
+
+if [ "$SKIP_GIGAAM" -eq 1 ]; then
+  echo "==> Section 6/6: skipping GigaAM (--no-gigaam)"
+else
+  echo "==> Section 6/6: GigaAM-v3 (Sber, default for --language ru)"
+  # Download model files directly via curl — same robustness pattern as
+  # the Whisper Russian fine-tunes. Avoids huggingface_hub's stalling
+  # parallel downloader and the `from_pretrained(<repo-id>)` first-run
+  # latency. Tiny repo: ~420 MB at e2e_rnnt revision.
+  if [ -f "$ROOT/models/gigaam-v3-e2e-rnnt/pytorch_model.bin" ]; then
+    echo "    model files already present: models/gigaam-v3-e2e-rnnt/"
+  else
+    bash "$ROOT/scripts/download-hf-model.sh" \
+      ai-sage/GigaAM-v3 \
+      "$ROOT/models/gigaam-v3-e2e-rnnt" \
+      --revision e2e_rnnt
+  fi
+  # Warm the uv venv (resolves torch + transformers + pyannote + ~3 GB of
+  # wheels). Model load uses the local files we just downloaded.
+  echo "    warming uv venv (first run: ~5 min for torch + transformers + pyannote)..."
+  uv run --script "$ROOT/scripts/gigaam_transcribe.py" \
+    --model-repo "$ROOT/models/gigaam-v3-e2e-rnnt" \
+    --revision main \
+    --warm
+fi
+
 # --- Summary -----------------------------------------------------------------
 
 cat <<EOF
@@ -140,15 +173,20 @@ cat <<EOF
 Setup complete. Try transcribing now:
 
   bun run transcribe path/to/memo.m4a
-                              # uses MLX + antony66 (best for Russian)
+                              # default: mlx + antony66 for Russian,
+                              #          mlx + large-v3 for other languages
 
-  bun run transcribe path/to/memo.m4a --model models/bond005-turbo-mlx
-                              # MLX + bond005 (best for ru+en code-switching)
+  bun run transcribe path/to/memo.m4a --model bond005-turbo
+                              # MLX + bond005 (ru+en code-switching alt)
+
+  bun run transcribe path/to/memo.m4a --engine gigaam
+                              # Sber GigaAM-v3 — opt-in 2nd-opinion engine
+                              # (didn't measurably beat antony66 on our test)
 
   bun run transcribe path/to/memo.m4a --engine cpp
                               # whisper.cpp + ggml-large-v3 + Silero VAD
 
   bun run transcribe path/to/memo.m4a --prompt "Обсуждаем MCP, API, latency."
-                              # vocabulary biasing
+                              # vocabulary biasing (mlx/cpp only)
 
 EOF

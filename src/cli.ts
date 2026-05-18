@@ -2,37 +2,51 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { cppEngine } from "./engines/cpp.ts";
+import { GIGAAM_SUPPORTED_FORMATS, gigaamEngine } from "./engines/gigaam.ts";
 import { mlxEngine } from "./engines/mlx.ts";
-import { ENGINES, FORMATS, type EngineName, type Format } from "./engines/types.ts";
+import { ENGINES, FORMATS, type Engine, type EngineName, type Format } from "./engines/types.ts";
 
 const HELP = `transcribe <file.m4a> [options]
 
 Options:
-  --engine <name>    mlx | cpp                       (default: mlx)
+  --engine <name>    mlx | cpp | gigaam              (default: mlx)
   --model <name>     engine-specific model alias or HuggingFace repo id
-                     mlx defaults to antony66-russian; cpp defaults to large-v3
   --format <fmt>     txt | srt | vtt | json | all   (default: txt)
   --output <file>    output file path                (default: <input-stem>.<ext> next to input)
   --language <code>  ISO language code               (default: ru)
-  --prompt <text>    initial prompt (vocabulary biasing for domain terms / acronyms)
+  --prompt <text>    initial prompt (mlx/cpp only — vocabulary biasing)
   --threads <n>      decoder threads (cpp engine only; default: min(cpus, 8))
   --keep-wav         retain the intermediate 16kHz WAV (cpp engine only)
   -h, --help         show this help
 
+Default model selection (when --model is omitted):
+  --engine mlx + --language ru     → antony66-russian   (Russian fine-tune)
+  --engine mlx + --language <other> → large-v3           (stock multilingual)
+  --engine cpp                     → large-v3            (ggml file)
+  --engine gigaam                  → gigaam-v3           (RNN-T head)
+
 Engine quick reference:
-  mlx (default)  — Apple Silicon native; loads HuggingFace models directly.
-                   Best Russian quality via the antony66 fine-tune.
-                   Requires: 'bun run setup:mlx' (uv + mlx-whisper).
-  cpp            — whisper.cpp built from source. Offline-strict, no Python,
-                   richer VAD knobs, cross-platform-friendly.
-                   Requires: 'bun run setup' (cmake + ffmpeg + ggml model).
+  mlx (default) — Apple Silicon native via mlx-whisper. Multilingual.
+                  Russian fine-tune antony66 produces the most readable
+                  output in our benchmarks.
+                  Requires: 'bun run setup' (uv + mlx-whisper + model).
+  cpp     — whisper.cpp built from source. Offline-strict, no Python,
+            richer VAD knobs, cross-platform-friendly.
+            Requires: 'bun run setup:cpp' (cmake + ffmpeg + ggml model).
+  gigaam  — Sber GigaAM-v3 (Russian-only). Native Latin char output for
+            "MCP"/"API". Strong on CV-ru benchmarks but didn't clearly
+            beat antony66 on our 48-min PRD memo (similar acronym
+            preservation, single-paragraph output is less readable).
+            Use for a second-opinion run or future LLM-vote post-correction.
+            Requires: 'bun run setup' (uv + torch + transformers + model).
+            Limitation: txt/json formats only in v1.
 `;
 
 export class UserError extends Error {}
 
 export interface CliOptions {
   input: string;
-  engine: EngineName;
+  engine: EngineName | undefined;
   model: string | undefined;
   format: Format;
   output: string | undefined;
@@ -42,15 +56,10 @@ export interface CliOptions {
   keepWav: boolean;
 }
 
-const DEFAULT_MODEL: Record<EngineName, string> = {
-  mlx: "antony66-russian",
-  cpp: "large-v3",
-};
-
 export function parseArgs(argv: readonly string[]): CliOptions {
   const opts = {
     input: undefined as string | undefined,
-    engine: "mlx" as EngineName,
+    engine: undefined as EngineName | undefined,
     model: undefined as string | undefined,
     format: "txt" as Format,
     output: undefined as string | undefined,
@@ -87,11 +96,18 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     throw new UserError(`Expected one input file, got ${positional.length}: ${positional.join(", ")}`);
   }
 
-  if (opts.engine === "mlx" && opts.keepWav) {
-    throw new UserError("--keep-wav is only supported by the cpp engine (mlx_whisper handles audio internally)");
+  const resolvedEngine = resolveEngine(opts.engine, opts.language);
+  if (resolvedEngine !== "cpp" && opts.keepWav) {
+    throw new UserError("--keep-wav is only supported by the cpp engine");
   }
-  if (opts.engine === "mlx" && opts.threads !== undefined) {
+  if (resolvedEngine !== "cpp" && opts.threads !== undefined) {
     throw new UserError("--threads is only supported by the cpp engine");
+  }
+  if (resolvedEngine === "gigaam" && !(GIGAAM_SUPPORTED_FORMATS as readonly Format[]).includes(opts.format)) {
+    throw new UserError(
+      `--format ${opts.format} is not supported by the gigaam engine (v1: txt | json). ` +
+        "Use --engine mlx or --engine cpp for srt/vtt/all.",
+    );
   }
 
   return { ...opts, input: positional[0]! };
@@ -129,9 +145,29 @@ export function resolveOutputStem(input: string, output: string | undefined): st
   return join(dir, stem);
 }
 
-export function resolveModel(opts: CliOptions): string {
-  return opts.model ?? DEFAULT_MODEL[opts.engine];
+// Default engine = mlx (universal). gigaam was tried as the auto-default for
+// --language ru but didn't measurably beat antony66 on real recordings
+// (see specs/gigaam/spec.md Field findings — same acronym preservation,
+// single-paragraph output is less readable). gigaam stays opt-in via
+// explicit --engine gigaam. Engine and language stay independent.
+export function resolveEngine(explicit: EngineName | undefined, _language: string): EngineName {
+  if (explicit) return explicit;
+  return "mlx";
 }
+
+export function resolveModel(opts: { model?: string | undefined; engine: EngineName; language: string }): string {
+  if (opts.model) return opts.model;
+  if (opts.engine === "gigaam") return "gigaam-v3";
+  if (opts.engine === "cpp") return "large-v3";
+  // mlx engine: pick Russian fine-tune for ru, stock multilingual for everything else
+  return opts.language === "ru" ? "antony66-russian" : "large-v3";
+}
+
+const ENGINE_MAP: Record<EngineName, Engine> = {
+  mlx: mlxEngine,
+  cpp: cppEngine,
+  gigaam: gigaamEngine,
+};
 
 const KNOWN_AUDIO_EXT = new Set([".m4a", ".mp3", ".mp4", ".wav", ".aac", ".flac", ".ogg"]);
 
@@ -158,13 +194,26 @@ async function main(): Promise<void> {
 
   const inputAbs = resolve(opts.input);
   const outputStem = resolveOutputStem(inputAbs, opts.output);
-  const engine = opts.engine === "cpp" ? cppEngine : mlxEngine;
+  const engineName = resolveEngine(opts.engine, opts.language);
+  const engine = ENGINE_MAP[engineName];
+  const model = resolveModel({ model: opts.model, engine: engineName, language: opts.language });
+
+  if (engineName === "gigaam" && opts.language !== "ru") {
+    console.warn(
+      `warning: gigaam is Russian-only; --language ${opts.language} will produce gibberish. ` +
+        "Use --engine mlx for non-Russian audio.",
+    );
+  }
+
+  if (!opts.engine || !opts.model) {
+    console.error(`(using: --engine ${engineName} --model ${model})`);
+  }
 
   try {
     await engine.transcribe({
       inputPath: inputAbs,
       outputStem,
-      model: resolveModel(opts),
+      model,
       language: opts.language,
       format: opts.format,
       initialPrompt: opts.prompt,

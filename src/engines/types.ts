@@ -1,8 +1,8 @@
 export type Format = "txt" | "srt" | "vtt" | "json" | "all";
 export const FORMATS: readonly Format[] = ["txt", "srt", "vtt", "json", "all"];
 
-export type EngineName = "mlx" | "cpp";
-export const ENGINES: readonly EngineName[] = ["mlx", "cpp"];
+export type EngineName = "mlx" | "cpp" | "gigaam";
+export const ENGINES: readonly EngineName[] = ["mlx", "cpp", "gigaam"];
 
 export interface TranscribeOptions {
   inputPath: string;
