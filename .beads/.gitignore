@@ -38,3 +38,22 @@ redirect
 
 # bv (beads viewer) lock file
 .bv.lock
+
+# Dolt runtime state (per-machine; never committed)
+dolt/
+dolt-access.lock
+dolt-server.pid
+dolt-server.port
+dolt-server.log
+dolt-server.lock
+dolt-server.activity
+ephemeral.sqlite3
+.local_version
+bd.sock.startlock
+export-state/
+interactions.jsonl
+*.corrupt.backup/
+
+# Credentials
+.beads-credential-key
+.env

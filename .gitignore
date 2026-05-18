@@ -52,3 +52,10 @@ PRD*.json
 
 # Claude Code session state
 .claude/
+
+# Beads runtime + credentials (per-machine; see .beads/.gitignore for the
+# in-tree scope; these patterns are also blocked at the repo root for
+# defense-in-depth)
+.dolt/
+.beads-credential-key
+*.db

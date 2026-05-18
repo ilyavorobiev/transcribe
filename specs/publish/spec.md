@@ -5,10 +5,8 @@
 - **Branch:** `main`
 - **Epic:** v0.1.0 — public OSS release on npm + GitHub
 - **PRD:** N/A (personal OSS project)
-- **Status:** Proposed. Many of the §8.5 implementation tasks have already
-  landed as part of the engine-architecture work (`mlx-russian/`, `gigaam/`
-  specs). The remaining work is publish-specific (LICENSE, README rewrite,
-  CI, npm publish flow, postinstall hygiene). See §8.5 for the current cut.
+- **Status:** **Shipped 2026-05-17** as `@ilyavorobiev/transcribe@0.1.0`.
+  See §12 for field findings hit during the publish work.
 
 ## 2. Context
 
@@ -730,3 +728,82 @@ real CHANGELOG entry** — not a silent dep bump.
 Similar pins likely needed for `mlx-whisper` (currently floats; no
 known breakage), `pyannote.audio` (needed-but-unused), `torchaudio`
 (API drift cost us bug #4 in gigaam). Document each in CONTRIBUTING.md.
+
+## 12. Field findings (publish work, 2026-05-17)
+
+### Finding #1 — Bun's `files` allowlist ignores `.npmignore`
+
+We wrote a `.npmignore` excluding `**/*.test.ts` as the "belt" half of a
+belt-and-suspenders setup with the `files` array (§6.2). On `bun publish
+--dry-run` every `src/**/*.test.ts` was still packed (10+ KB of test code
+in a 79 KB tarball). Confirmed with `bun publish v1.3.11`: when `files`
+is set, Bun uses it as the authoritative allowlist and does **not**
+intersect it with `.npmignore` patterns.
+
+**Fix:** use negative globs inside `files` itself. The current
+`package.json` carries:
+
+```json
+"files": [
+  "src",
+  "!src/**/*.test.ts",
+  "!src/**/*.test.tsx",
+  ...
+]
+```
+
+`.npmignore` is kept as defense-in-depth and as a hint to developers
+reading the repo, but it does not influence the tarball under Bun.
+
+### Finding #2 — `bun publish --dry-run` requires auth in CI
+
+The original `release.yml` (§6.8) had a dry-run gate before the real
+publish to catch packing regressions. In CI without an npm token,
+`bun publish --dry-run` exits with code 1 even though packing succeeds
+and the file list is printed (`error: missing authentication (run
+'bunx npm login')`). This is different from `npm publish --dry-run`,
+which works without auth. The result was a release.yml that failed
+**before** ever attempting the real publish.
+
+**Fix:** dropped the dry-run step from CI. The real `bun publish` packs
+identically, so a packing bug would surface there a few seconds later
+with the same error. `CONTRIBUTING.md` still calls out a local
+`bun publish --dry-run --access public` as part of the manual release
+checklist (where the developer is already logged in via `bun login`).
+
+### Finding #3 — `os.homedir()` ignores `$HOME` env mutations
+
+`src/paths.ts cacheRoot()` originally relied on `os.homedir()` from
+node:os to compose the macOS default `~/Library/Caches/transcribe`.
+The cache-dir unit tests set `process.env.HOME = "/Users/testuser"`
+and expected the resolver to pick that up. It didn't — `homedir()`
+under libuv reads from the passwd database at first call and caches,
+so test overrides never take effect.
+
+**Fix:** `cacheRoot()` checks `process.env.HOME` first and falls back
+to `homedir()`. This also matches the bash resolver in
+`scripts/setup-all.sh resolve_artifact_dirs()`, which uses `$HOME`
+unconditionally — write-time and read-time agree.
+
+### Finding #4 — Tag-recreation is part of the release dance
+
+We tagged `v0.1.0` while release.yml still had the broken dry-run
+step. The workflow failed at the dry-run step, **before** the real
+publish step ran, so nothing actually reached npm — but the tag was
+sitting on a broken release config. Recovery was: fix release.yml,
+commit, delete tag both locally and on origin, re-tag on the new
+commit, push.
+
+This is safe **only because no consumer has the tag yet** (the repo
+is brand-new). For a real subsequent release, the right move is
+always to bump to the next patch version rather than recycle a tag.
+We caught a freebie this time; document it so future-you doesn't
+expect to recycle tags after public consumption.
+
+### Finding #5 — `script.test` must be `bun test src`, not `bun test`
+
+Already documented in `cli/spec.md` and `AGENTS.md`, but worth
+re-stating: `bun test` (no args) walks the working tree and picks
+up the broken Node-addon test inside `vendor/whisper.cpp/`. The
+package.json `test` script is `bun test src` to scope. CI runs
+`bun run test` (the script), not `bun test` directly.
