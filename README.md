@@ -1,14 +1,23 @@
-# @ilyavorobiev/transcribe
+# transcribe — offline voice-memo transcription for macOS
 
 [![npm](https://img.shields.io/npm/v/@ilyavorobiev/transcribe.svg)](https://npmjs.com/package/@ilyavorobiev/transcribe)
-[![license](https://img.shields.io/npm/l/@ilyavorobiev/transcribe.svg)](./LICENSE)
+[![license](https://img.shields.io/github/license/ilyavorobiev/transcribe.svg)](./LICENSE)
 [![CI](https://github.com/ilyavorobiev/transcribe/actions/workflows/ci.yml/badge.svg)](https://github.com/ilyavorobiev/transcribe/actions/workflows/ci.yml)
 [![platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#supported-platforms)
 
-Offline transcription of iPhone `.m4a` voice memos on macOS, with three
-engines unified behind a single CLI. Optimized for Russian; multilingual
-support via Whisper. Built for Apple Silicon (Metal), works on Intel via
-the cpp engine.
+A macOS command-line tool that transcribes audio files — iPhone `.m4a`
+voice memos by default — entirely on your machine. **No cloud, no API
+keys, no network calls during transcription.** Three transcription
+engines are unified behind a single CLI: **mlx-whisper** (default;
+Apple Silicon native), **whisper.cpp** (offline-strict, no Python
+runtime), and Sber **GigaAM-v3** (Russian-only opt-in). Optimized for
+Russian out of the box; multilingual support via Whisper for ~99
+languages.
+
+Built for a specific personal workflow (long Russian voice memos
+recorded on iPhone, often with English tech vocabulary mixed in), then
+published as OSS in case it's useful to anyone else. Bug reports and
+PRs are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ```sh
 bun add -g @ilyavorobiev/transcribe
