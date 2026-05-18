@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mlxArgv, resolveModelRef, type MlxArgs } from "./mlx.ts";
+import { mlxArgv, resolveModelRef, sanitizeOutputName, type MlxArgs } from "./mlx.ts";
 
 const base: MlxArgs = {
   inputPath: "/in/memo.m4a",
@@ -53,9 +53,15 @@ test("mlxArgv omits --initial-prompt when undefined", () => {
   expect(mlxArgv(base)).not.toContain("--initial-prompt");
 });
 
-test("resolveModelRef expands known aliases", () => {
-  expect(resolveModelRef("antony66-russian")).toBe("antony66/whisper-large-v3-russian");
-  expect(resolveModelRef("bond005-turbo")).toBe("bond005/whisper-podlodka-turbo");
+test("resolveModelRef expands Russian fine-tunes to LOCAL converted paths (not HF repos)", () => {
+  // antony66 and bond005 ship in HF format and can't be auto-loaded by
+  // mlx_whisper; the alias must point at the local converted directory
+  // populated by 'bun run setup'.
+  expect(resolveModelRef("antony66-russian")).toMatch(/\/models\/antony66-russian-mlx$/);
+  expect(resolveModelRef("bond005-turbo")).toMatch(/\/models\/bond005-turbo-mlx$/);
+});
+
+test("resolveModelRef expands stock multilingual aliases to mlx-community HF repos", () => {
   expect(resolveModelRef("large-v3")).toBe("mlx-community/whisper-large-v3-mlx");
   expect(resolveModelRef("large-v3-turbo")).toBe("mlx-community/whisper-large-v3-turbo");
 });
@@ -65,4 +71,11 @@ test("resolveModelRef passes raw HF refs through unchanged", () => {
     "mlx-community/whisper-large-v3-turbo",
   );
   expect(resolveModelRef("some-user/some-mlx-model")).toBe("some-user/some-mlx-model");
+});
+
+test("sanitizeOutputName replaces dots with underscores (workaround for mlx_whisper Path.with_suffix bug)", () => {
+  expect(sanitizeOutputName("PRD1.v5-antony")).toBe("PRD1_v5-antony");
+  expect(sanitizeOutputName("memo.2025-05-17")).toBe("memo_2025-05-17");
+  expect(sanitizeOutputName("plain")).toBe("plain");
+  expect(sanitizeOutputName("a.b.c.d")).toBe("a_b_c_d");
 });

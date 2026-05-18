@@ -17,14 +17,69 @@ Bun + TypeScript. macOS only. Single binary: `transcribe`.
 ## First time on this repo
 
 1. `bun install` — installs `@types/bun` and `typescript`. Fast.
-2. Choose your engine setup:
-   - `bun run setup` — installs `uv` + `mlx-whisper` (default MLX engine).
-     ~1–2 min.
-   - `bun run setup:cpp` — clones and builds whisper.cpp with Metal, downloads
-     `large-v3.bin` (~3.1 GB). ~5–10 min. Only needed if you'll use
-     `--engine cpp`.
-3. `bun run typecheck && bun test` — should pass without any setup having run
+2. `bun run setup` — **one-shot install of everything**: both engines,
+   all default models, conversions. Idempotent; safe to re-run.
+   - Disk: ~16 GB. Time: ~10–20 min depending on network.
+   - Installs Homebrew deps (`uv`, `ffmpeg`, `cmake`, `git`).
+   - Installs `mlx-whisper` into an isolated `uv tool` venv.
+   - Clones + builds `whisper.cpp` with Metal.
+   - Downloads `ggml-large-v3.bin` (~3.1 GB) + Silero VAD (~1 MB) for cpp.
+   - Downloads + converts `antony66/whisper-large-v3-russian` (default).
+   - Downloads + converts `bond005/whisper-podlodka-turbo`.
+   - When it finishes, the next command can be `bun run transcribe …`.
+3. Skips for narrow setups:
+   - `bash scripts/setup-all.sh --no-cpp`     — MLX only (~12 GB)
+   - `bash scripts/setup-all.sh --no-bond005` — antony66 only (~10 GB)
+   - `bash scripts/setup-all.sh --no-mlx`     — cpp only (~4 GB)
+   - `bun run setup:mlx` / `bun run setup:cpp` — single engine, explicit
+4. `bun run typecheck && bun test` — should pass without any setup having run
    (tests are pure; they don't spawn ffmpeg/whisper/mlx_whisper).
+
+## MLX model conversion
+
+Russian Whisper fine-tunes on HuggingFace
+([antony66/whisper-large-v3-russian](https://huggingface.co/antony66/whisper-large-v3-russian),
+[bond005/whisper-podlodka-turbo](https://huggingface.co/bond005/whisper-podlodka-turbo))
+ship in **HF Transformers format** — `mlx_whisper` cannot load them
+directly and will error with
+`TypeError: ModelDimensions.__init__() got an unexpected keyword argument '_name_or_path'`.
+
+Use the conversion script:
+
+```sh
+# convert antony66 → models/antony66-russian-mlx/
+bash scripts/convert-hf-to-mlx.sh antony66/whisper-large-v3-russian
+
+# convert bond005 → models/podlodka-turbo-mlx/
+bash scripts/convert-hf-to-mlx.sh bond005/whisper-podlodka-turbo
+
+# then use it
+bun run transcribe foo.m4a --model models/antony66-russian-mlx
+bun run transcribe foo.m4a --model models/podlodka-turbo-mlx
+```
+
+What the script does:
+
+1. Lists files in the repo via the HF API (skips `test_*.wav` fixtures).
+2. **Downloads via plain `curl`** rather than `mlx_whisper`'s built-in
+   downloader. The HF parallel Python downloader frequently stalls in
+   `CLOSE_WAIT` on large multi-file Russian repos; plain curl is reliable.
+3. Fetches `mlx-examples/whisper/convert.py` (it's not bundled with the
+   `mlx-whisper` pip package).
+4. Runs the conversion via `uv tool run --from mlx-whisper --with transformers --with torch`
+   so torch and transformers are present without polluting your global Python.
+5. Renames `model.safetensors` → `weights.safetensors`. `mlx-whisper 0.4.3`
+   expects the latter name; the upstream `convert.py` writes the former.
+   Plain version skew.
+
+**Pre-converted MLX models** (anything under `mlx-community/`) can be passed
+to `--model` directly with no conversion needed — `mlx_whisper` auto-downloads
+them on first use.
+
+```sh
+bun run transcribe foo.m4a --model mlx-community/whisper-large-v3-turbo
+bun run transcribe foo.m4a --model mlx-community/whisper-large-v3-mlx
+```
 
 ## Essential commands
 
@@ -155,6 +210,20 @@ own threading).
 - **Don't use the upstream `download-ggml-model.sh` for downloads.** It
   silently truncates on HuggingFace's S3 redirect (we hit this — see
   `specs/publish/spec.md` §6.4 step 8). Use `Bun.fetch` / `curl -L` directly.
+- **Don't rely on `mlx_whisper`'s built-in HF download for large
+  multi-file Russian repos** (antony66, bond005). It stalls in
+  `CLOSE_WAIT`. `HF_HUB_ENABLE_HF_TRANSFER` is deprecated;
+  `HF_XET_HIGH_PERFORMANCE=1` didn't help in our testing either. Use
+  `scripts/convert-hf-to-mlx.sh` which curls each file.
+- **Don't pass an mlx output stem with dots in it directly to mlx_whisper.**
+  Its writer does `Path(name).with_suffix(".txt")` which strips at the
+  last dot (so `PRD1.v5-antony.txt` becomes `PRD1.txt`). The mlx engine
+  wrapper in `src/engines/mlx.ts` already applies `sanitizeOutputName()`
+  + post-rename — keep that intact when editing.
+- **Don't assume HF-format safetensors are MLX-loadable.** They're not.
+  Russian fine-tunes need the conversion step in
+  `scripts/convert-hf-to-mlx.sh`. Symptom of a missed conversion:
+  `TypeError: ModelDimensions.__init__() got an unexpected keyword argument '_name_or_path'`.
 - **Don't add a third engine without a new `specs/<engine>/spec.md`.** The
   Engine interface is `src/engines/types.ts`; follow the pattern in
   `cpp.ts` / `mlx.ts`. Each engine owns its model alias table.

@@ -407,10 +407,55 @@ cpp).
 
 ### Tests
 
-39 tests across 5 files (was 23 pre-Path-A, 30 after Path A, now 39 after
-unification refactor): cli routing + `--engine` validation + engine-specific
-flag rejection; both engines' pure argv builders; ffmpeg argv; cache-dir
-resolution.
+41 tests across 5 files (was 23 pre-Path-A, 30 after Path A, 39 after
+unification refactor, +2 from the mlx output-stem fix): cli routing +
+`--engine` validation + engine-specific flag rejection; both engines' pure
+argv builders; ffmpeg argv; cache-dir resolution; mlx `sanitizeOutputName`.
+
+### Field findings — Russian fine-tune loading is harder than the spec assumed
+
+The spec's §6.2 said "*mlx_whisper auto-converts on the fly the first time
+you load them*". That turned out to be wrong. Russian fine-tunes published
+on HF (antony66, bond005) require **three** real steps before mlx_whisper
+will load them, all of which the spec's `setup` should automate:
+
+1. **Manual download via curl, not mlx_whisper's built-in fetch.**
+   mlx_whisper uses `huggingface_hub`'s parallel downloader, which stalls
+   in `CLOSE_WAIT` on the multi-file Russian repos. We hit this
+   reproducibly. The deprecated `HF_HUB_ENABLE_HF_TRANSFER=1` and the
+   replacement `HF_XET_HIGH_PERFORMANCE=1` both made no difference.
+   Direct `curl -L` of each file is fast and reliable.
+
+2. **HF format → MLX format conversion via `mlx-examples/whisper/convert.py`.**
+   Russian fine-tunes ship as standard HF Transformers safetensors with a
+   `config.json` containing `_name_or_path` etc. — `mlx_whisper.load_model`
+   rejects them (`TypeError: ModelDimensions.__init__() got an unexpected
+   keyword argument '_name_or_path'`). The conversion script is **not
+   bundled** with the `mlx-whisper` pip package; it lives in the
+   `mlx-examples` GitHub repo. The script needs `torch + transformers`
+   which we get via `uv tool run --from mlx-whisper --with transformers
+   --with torch`.
+
+3. **Rename `model.safetensors` → `weights.safetensors`.** The version of
+   `convert.py` on `mlx-examples/main` writes `model.safetensors` (HF
+   convention), but the version of `mlx-whisper` on PyPI (0.4.3) expects
+   `weights.safetensors`. Plain version skew. We rename in the conversion
+   script.
+
+The script `scripts/convert-hf-to-mlx.sh` does all three steps. It's
+idempotent (skips already-downloaded files; re-runnable). `setup-mlx.sh`
+calls it automatically for the default model unless `MODEL=mlx-community/*`
+(which is pre-converted and needs nothing) or `--no-model` is passed.
+
+### Field finding — mlx_whisper writer's dot bug
+
+`mlx_whisper.writers` does
+`Path(output_dir / output_name).with_suffix(f".{ext}")`. `Path.with_suffix`
+strips at the **last** dot in the filename, not just true extensions. So
+`output_name="PRD1.v5-antony"` produces `PRD1.txt` instead of
+`PRD1.v5-antony.txt`. The mlx engine wrapper applies
+`sanitizeOutputName()` (replace `.` → `_`) before calling mlx_whisper and
+renames after. Test coverage in `src/engines/mlx.test.ts`.
 
 ## 10. References
 

@@ -1,16 +1,45 @@
-import { existsSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, renameSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { PROJECT_ROOT } from "../paths.ts";
 import type { Engine, Format, TranscribeOptions } from "./types.ts";
 
+// Aliases for Russian fine-tunes point at LOCAL converted directories
+// (populated by `bun run setup` via scripts/convert-hf-to-mlx.sh). These
+// models are not in MLX format upstream and can't be auto-downloaded by
+// mlx_whisper; pointing the alias at the HF repo ID would trigger an
+// auto-download that stalls (see specs/mlx-russian/spec.md Field findings).
+//
+// Aliases for stock multilingual models point at HF repo IDs under
+// mlx-community/ — those are pre-converted to MLX format and mlx_whisper
+// auto-fetches them fine.
 const MODEL_ALIASES: Record<string, string> = {
-  "antony66-russian": "antony66/whisper-large-v3-russian",
-  "bond005-turbo": "bond005/whisper-podlodka-turbo",
+  "antony66-russian": join(PROJECT_ROOT, "models", "antony66-russian-mlx"),
+  "bond005-turbo": join(PROJECT_ROOT, "models", "bond005-turbo-mlx"),
   "large-v3": "mlx-community/whisper-large-v3-mlx",
   "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
 };
 
+const SETUP_HINT: Record<string, string> = {
+  "antony66-russian": "bun run setup           # downloads + converts antony66",
+  "bond005-turbo": "bun run setup           # downloads + converts bond005 too",
+};
+
 export function resolveModelRef(name: string): string {
   return MODEL_ALIASES[name] ?? name;
+}
+
+export function isLocalModelPath(ref: string): boolean {
+  return ref.startsWith("/") || ref.startsWith("./") || ref.startsWith("../");
+}
+
+export class MissingLocalModelError extends Error {
+  constructor(alias: string, resolvedPath: string) {
+    const hint = SETUP_HINT[alias];
+    super(
+      `model '${alias}' resolves to ${resolvedPath} but that directory doesn't exist.\n` +
+        (hint ? `Fix: ${hint}` : `Fix: run 'bun run setup' or pass --model with a different value`),
+    );
+  }
 }
 
 export interface MlxArgs {
@@ -42,16 +71,29 @@ export function mlxArgv(opts: MlxArgs): string[] {
   return args;
 }
 
+// mlx_whisper's writer does `Path(dir / name).with_suffix(".txt")` which
+// strips everything after the last dot in `name`. So passing "PRD1.v5-antony"
+// produces "PRD1.txt" instead of "PRD1.v5-antony.txt". Workaround: pass a
+// dot-free stem to mlx_whisper, then rename to the intended name.
+export function sanitizeOutputName(stem: string): string {
+  return stem.replace(/\./g, "_");
+}
+
 export const mlxEngine: Engine = {
   name: "mlx",
   async transcribe(opts: TranscribeOptions): Promise<void> {
     const outputDir = dirname(opts.outputStem);
-    const outputName = basename(opts.outputStem);
+    const finalStem = basename(opts.outputStem);
+    const safeStem = sanitizeOutputName(finalStem);
+    const modelRef = resolveModelRef(opts.model);
+    if (isLocalModelPath(modelRef) && !existsSync(modelRef)) {
+      throw new MissingLocalModelError(opts.model, modelRef);
+    }
     const argv = mlxArgv({
       inputPath: opts.inputPath,
       outputDir,
-      outputName,
-      modelRef: resolveModelRef(opts.model),
+      outputName: safeStem,
+      modelRef,
       language: opts.language,
       format: opts.format,
       initialPrompt: opts.initialPrompt,
@@ -65,7 +107,17 @@ export const mlxEngine: Engine = {
     if (code !== 0) {
       throw new Error(`mlx_whisper failed with exit code ${code}`);
     }
+
     const formatsToCheck = opts.format === "all" ? ["txt", "srt", "vtt", "json"] : [opts.format];
+
+    if (finalStem !== safeStem) {
+      for (const f of formatsToCheck) {
+        const src = join(outputDir, `${safeStem}.${f}`);
+        const dst = join(outputDir, `${finalStem}.${f}`);
+        if (existsSync(src)) renameSync(src, dst);
+      }
+    }
+
     const expected = formatsToCheck.map((f) => `${opts.outputStem}.${f}`);
     const missing = expected.filter((p) => !existsSync(p));
     if (missing.length > 0) {

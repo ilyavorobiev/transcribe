@@ -10,8 +10,10 @@
     "transcribe": "bun run src/cli.ts",
     "test": "bun test src",
     "typecheck": "bunx tsc --noEmit",
-    "setup": "bash scripts/setup-mlx.sh",
-    "setup:cpp": "bash scripts/setup.sh",
+    "setup": "bash scripts/setup-all.sh",
+    "setup:mlx": "bash scripts/setup-mlx.sh",
+    "setup:cpp": "bash scripts/setup-cpp.sh",
+    "convert": "bash scripts/convert-hf-to-mlx.sh",
     "install:bin": "bash scripts/install.sh"
   },
   "devDependencies": {
