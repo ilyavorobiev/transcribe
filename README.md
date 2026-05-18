@@ -1,4 +1,4 @@
-# transcribe — offline voice-memo transcription for macOS
+# Transcribe — offline voice-memo transcription for macOS
 
 [![npm](https://img.shields.io/npm/v/@ilyavorobiev/transcribe.svg)](https://npmjs.com/package/@ilyavorobiev/transcribe)
 [![license](https://img.shields.io/github/license/ilyavorobiev/transcribe.svg)](./LICENSE)
