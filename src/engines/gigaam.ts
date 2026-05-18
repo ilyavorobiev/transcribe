@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { preprocess } from "../audio.ts";
-import { PROJECT_ROOT } from "../paths.ts";
+import { PROJECT_ROOT, resolveModelDirPath } from "../paths.ts";
 import type { Engine, Format, TranscribeOptions } from "./types.ts";
 
 export interface GigaAmModelRef {
@@ -9,37 +9,33 @@ export interface GigaAmModelRef {
   revision: string;
 }
 
-// Aliases point at LOCAL directories populated by `bun run setup` via
+// Aliases point at LOCAL directories populated by `transcribe setup` via
 // scripts/download-hf-model.sh. We avoid passing HF repo IDs to
 // `transformers.AutoModel.from_pretrained()` directly because that triggers
 // the huggingface_hub parallel downloader (stalls in CLOSE_WAIT for big
 // multi-file Russian repos; same root cause as antony66/bond005).
-const MODEL_ALIASES: Record<string, GigaAmModelRef> = {
-  "gigaam-v3": {
-    repo: join(PROJECT_ROOT, "models", "gigaam-v3-e2e-rnnt"),
-    revision: "main",
-  },
-  "gigaam-v3-ctc": {
-    repo: join(PROJECT_ROOT, "models", "gigaam-v3-e2e-ctc"),
-    revision: "main",
-  },
-  "gigaam-v2": {
-    repo: join(PROJECT_ROOT, "models", "gigaam-v2"),
-    revision: "main",
-  },
+//
+// Subdirs resolve at call time via resolveModelDirPath() so they track the
+// active cache root.
+const MODEL_SUBDIRS: Record<string, string> = {
+  "gigaam-v3": "gigaam-v3-e2e-rnnt",
+  "gigaam-v3-ctc": "gigaam-v3-e2e-ctc",
+  "gigaam-v2": "gigaam-v2",
 };
 
 const SETUP_HINT: Record<string, string> = {
   "gigaam-v3":
-    "bun run setup           # downloads ai-sage/GigaAM-v3 @ e2e_rnnt (~420 MB)",
+    "transcribe setup        # downloads ai-sage/GigaAM-v3 @ e2e_rnnt (~420 MB)",
   "gigaam-v3-ctc":
-    "bash scripts/download-hf-model.sh ai-sage/GigaAM-v3 models/gigaam-v3-e2e-ctc --revision e2e_ctc",
+    "bash scripts/download-hf-model.sh ai-sage/GigaAM-v3 <cache>/models/gigaam-v3-e2e-ctc --revision e2e_ctc",
   "gigaam-v2":
-    "bash scripts/download-hf-model.sh ai-sage/GigaAM-v2 models/gigaam-v2",
+    "bash scripts/download-hf-model.sh ai-sage/GigaAM-v2 <cache>/models/gigaam-v2",
 };
 
 export function resolveGigaAmModel(name: string): GigaAmModelRef {
-  return MODEL_ALIASES[name] ?? { repo: name, revision: "main" };
+  const subdir = MODEL_SUBDIRS[name];
+  if (subdir) return { repo: resolveModelDirPath(subdir), revision: "main" };
+  return { repo: name, revision: "main" };
 }
 
 export function isLocalRepo(ref: string): boolean {

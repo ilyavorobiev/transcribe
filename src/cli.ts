@@ -1,14 +1,13 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { cppEngine } from "./engines/cpp.ts";
 import { GIGAAM_SUPPORTED_FORMATS, gigaamEngine } from "./engines/gigaam.ts";
 import { mlxEngine } from "./engines/mlx.ts";
 import { ENGINES, FORMATS, type Engine, type EngineName, type Format } from "./engines/types.ts";
+import { PROJECT_ROOT } from "./paths.ts";
 
-const HELP = `transcribe <file.m4a> [options]
-
-Options:
+const TRANSCRIBE_FLAGS_HELP = `Options:
   --engine <name>    mlx | cpp | gigaam              (default: mlx)
   --model <name>     engine-specific model alias or HuggingFace repo id
   --format <fmt>     txt | srt | vtt | json | all   (default: txt)
@@ -29,18 +28,38 @@ Engine quick reference:
   mlx (default) — Apple Silicon native via mlx-whisper. Multilingual.
                   Russian fine-tune antony66 produces the most readable
                   output in our benchmarks.
-                  Requires: 'bun run setup' (uv + mlx-whisper + model).
+                  Requires: 'transcribe setup' (uv + mlx-whisper + model).
   cpp     — whisper.cpp built from source. Offline-strict, no Python,
             richer VAD knobs, cross-platform-friendly.
-            Requires: 'bun run setup:cpp' (cmake + ffmpeg + ggml model).
+            Requires: 'transcribe setup:cpp' (cmake + ffmpeg + ggml model).
   gigaam  — Sber GigaAM-v3 (Russian-only). Native Latin char output for
             "MCP"/"API". Strong on CV-ru benchmarks but didn't clearly
             beat antony66 on our 48-min PRD memo (similar acronym
             preservation, single-paragraph output is less readable).
             Use for a second-opinion run or future LLM-vote post-correction.
-            Requires: 'bun run setup' (uv + torch + transformers + model).
+            Requires: 'transcribe setup' (uv + torch + transformers + model).
             Limitation: txt/json formats only in v1.
 `;
+
+const HELP = `transcribe — offline transcription on macOS (mlx | cpp | gigaam)
+
+USAGE
+  transcribe <file.m4a> [options]
+                                    transcribe one audio file
+  transcribe setup [--no-cpp|--no-mlx|--no-gigaam|--no-bond005]
+                                    install engines + models (one-time, ~20 GB)
+  transcribe setup:mlx              install only the mlx engine
+  transcribe setup:cpp              install only the cpp engine
+  transcribe --version              print version
+  transcribe --help                 show this help
+
+${TRANSCRIBE_FLAGS_HELP}
+More: https://github.com/ilyavorobiev/transcribe
+`;
+
+const TRANSCRIBE_HELP = `transcribe <file.m4a> [options]
+
+${TRANSCRIBE_FLAGS_HELP}`;
 
 export class UserError extends Error {}
 
@@ -54,6 +73,50 @@ export interface CliOptions {
   prompt: string | undefined;
   threads: number | undefined;
   keepWav: boolean;
+}
+
+const SETUP_SCRIPTS = {
+  "setup": "scripts/setup-all.sh",
+  "setup:mlx": "scripts/setup-mlx.sh",
+  "setup:cpp": "scripts/setup-cpp.sh",
+} as const;
+
+export type SubcommandName = keyof typeof SETUP_SCRIPTS;
+
+const SUBCOMMAND_NAMES = Object.keys(SETUP_SCRIPTS) as readonly SubcommandName[];
+
+export type Route =
+  | { kind: "transcribe"; argv: readonly string[] }
+  | { kind: "setup"; subcommand: SubcommandName; argv: readonly string[] }
+  | { kind: "version" }
+  | { kind: "help" };
+
+// Pure routing: argv[0] decides. Sub-flags pass through unchanged. We only
+// intercept --version / --help at position 0 so `transcribe foo.m4a --help`
+// still falls through to the per-flag help in parseArgs.
+export function routeArgs(argv: readonly string[]): Route {
+  const first = argv[0];
+  if (first === "--version" || first === "-v") return { kind: "version" };
+  if (first === "--help" || first === "-h") return { kind: "help" };
+  if (first !== undefined && (SUBCOMMAND_NAMES as readonly string[]).includes(first)) {
+    return {
+      kind: "setup",
+      subcommand: first as SubcommandName,
+      argv: argv.slice(1),
+    };
+  }
+  return { kind: "transcribe", argv };
+}
+
+export function setupScriptPath(sub: SubcommandName): string {
+  return join(PROJECT_ROOT, SETUP_SCRIPTS[sub]);
+}
+
+export function readPackageVersion(): string {
+  const pkg = JSON.parse(readFileSync(join(PROJECT_ROOT, "package.json"), "utf8")) as {
+    version?: string;
+  };
+  return pkg.version ?? "0.0.0";
 }
 
 export function parseArgs(argv: readonly string[]): CliOptions {
@@ -83,7 +146,7 @@ export function parseArgs(argv: readonly string[]): CliOptions {
       case "--keep-wav": opts.keepWav = true; break;
       case "-h":
       case "--help":
-        process.stdout.write(HELP);
+        process.stdout.write(TRANSCRIBE_HELP);
         process.exit(0);
       default:
         if (a.startsWith("--")) throw new UserError(`Unknown flag: ${a}`);
@@ -171,10 +234,26 @@ const ENGINE_MAP: Record<EngineName, Engine> = {
 
 const KNOWN_AUDIO_EXT = new Set([".m4a", ".mp3", ".mp4", ".wav", ".aac", ".flac", ".ogg"]);
 
-async function main(): Promise<void> {
+async function runSetup(sub: SubcommandName, argv: readonly string[]): Promise<never> {
+  const script = setupScriptPath(sub);
+  if (!existsSync(script)) {
+    console.error(`error: setup script missing: ${script}`);
+    process.exit(2);
+  }
+  const proc = Bun.spawn({
+    cmd: ["bash", script, ...argv],
+    stdout: "inherit",
+    stderr: "inherit",
+    stdin: "inherit",
+  });
+  const code = await proc.exited;
+  process.exit(code);
+}
+
+async function runTranscribe(argv: readonly string[]): Promise<void> {
   let opts: CliOptions;
   try {
-    opts = parseArgs(process.argv.slice(2));
+    opts = parseArgs(argv);
   } catch (e) {
     if (e instanceof UserError) {
       console.error(`error: ${e.message}`);
@@ -224,6 +303,24 @@ async function main(): Promise<void> {
   } catch (e) {
     console.error(`error: ${(e as Error).message}`);
     process.exit(2);
+  }
+}
+
+async function main(): Promise<void> {
+  const route = routeArgs(process.argv.slice(2));
+  switch (route.kind) {
+    case "version":
+      process.stdout.write(`${readPackageVersion()}\n`);
+      process.exit(0);
+    case "help":
+      process.stdout.write(HELP);
+      process.exit(0);
+    case "setup":
+      await runSetup(route.subcommand, route.argv);
+      return;
+    case "transcribe":
+      await runTranscribe(route.argv);
+      return;
   }
 }
 

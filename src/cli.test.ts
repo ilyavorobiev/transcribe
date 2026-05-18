@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   parseArgs,
+  readPackageVersion,
   resolveEngine,
   resolveModel,
   resolveOutputStem,
+  routeArgs,
+  setupScriptPath,
   UserError,
 } from "./cli.ts";
 
@@ -185,4 +188,86 @@ test("resolveOutputStem strips extension from --output and creates parent", () =
   const stem = resolveOutputStem("/x/memo.m4a", join(nested, "out.txt"));
   expect(stem).toBe(join(nested, "out"));
   expect(existsSync(nested)).toBe(true);
+});
+
+// -- routeArgs (subcommand dispatch) -----------------------------------------
+
+test("routeArgs: empty argv routes to transcribe (missing-input error happens later)", () => {
+  expect(routeArgs([])).toEqual({ kind: "transcribe", argv: [] });
+});
+
+test("routeArgs: --version intercepts at argv[0]", () => {
+  expect(routeArgs(["--version"])).toEqual({ kind: "version" });
+  expect(routeArgs(["-v"])).toEqual({ kind: "version" });
+});
+
+test("routeArgs: top-level --help intercepts at argv[0]", () => {
+  expect(routeArgs(["--help"])).toEqual({ kind: "help" });
+  expect(routeArgs(["-h"])).toEqual({ kind: "help" });
+});
+
+test("routeArgs: --help mid-argv falls through to transcribe (per-flag help)", () => {
+  // `transcribe foo.m4a --help` should hit parseArgs's --help, not the
+  // combined top-level help. routeArgs only intercepts at argv[0].
+  expect(routeArgs(["foo.m4a", "--help"])).toEqual({
+    kind: "transcribe",
+    argv: ["foo.m4a", "--help"],
+  });
+});
+
+test("routeArgs: setup subcommand passes through trailing flags", () => {
+  expect(routeArgs(["setup"])).toEqual({
+    kind: "setup",
+    subcommand: "setup",
+    argv: [],
+  });
+  expect(routeArgs(["setup", "--no-gigaam", "--no-cpp"])).toEqual({
+    kind: "setup",
+    subcommand: "setup",
+    argv: ["--no-gigaam", "--no-cpp"],
+  });
+});
+
+test("routeArgs: setup:mlx and setup:cpp subcommands", () => {
+  expect(routeArgs(["setup:mlx"])).toMatchObject({
+    kind: "setup",
+    subcommand: "setup:mlx",
+  });
+  expect(routeArgs(["setup:cpp"])).toMatchObject({
+    kind: "setup",
+    subcommand: "setup:cpp",
+  });
+});
+
+test("routeArgs: unrecognized first arg routes to transcribe", () => {
+  // `transcribe my-audio.m4a` and `transcribe install` should both fall
+  // through; parseArgs / file-existence check will surface the right error.
+  expect(routeArgs(["my-audio.m4a", "--engine", "cpp"])).toEqual({
+    kind: "transcribe",
+    argv: ["my-audio.m4a", "--engine", "cpp"],
+  });
+  expect(routeArgs(["install"])).toEqual({
+    kind: "transcribe",
+    argv: ["install"],
+  });
+});
+
+test("routeArgs: filename that contains 'setup' substring isn't a subcommand", () => {
+  // exact-match only; `setup-notes.m4a` is a filename, not setup
+  expect(routeArgs(["setup-notes.m4a"])).toEqual({
+    kind: "transcribe",
+    argv: ["setup-notes.m4a"],
+  });
+});
+
+test("setupScriptPath returns paths to the bash scripts", () => {
+  expect(setupScriptPath("setup")).toMatch(/scripts\/setup-all\.sh$/);
+  expect(setupScriptPath("setup:mlx")).toMatch(/scripts\/setup-mlx\.sh$/);
+  expect(setupScriptPath("setup:cpp")).toMatch(/scripts\/setup-cpp\.sh$/);
+});
+
+test("readPackageVersion returns the version from package.json", () => {
+  // Just verify shape: matches MAJOR.MINOR.PATCH. The exact value is the
+  // version we publish, so don't hardcode it.
+  expect(readPackageVersion()).toMatch(/^\d+\.\d+\.\d+/);
 });

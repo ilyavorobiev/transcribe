@@ -40,8 +40,11 @@ fi
 
 HF_REPO="$1"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# When invoked via setup-all.sh, defaults land under the cache dir; stand-
+# alone runs fall back to the legacy <repo>/models layout.
+MODELS_DIR="${TRANSCRIBE_MODELS_DIR:-$ROOT/models}"
 DEFAULT_NAME="$(basename "$HF_REPO" | sed 's/whisper-//;s/-russian/-russian/' )"
-TARGET_DIR="${2:-$ROOT/models/$DEFAULT_NAME-mlx}"
+TARGET_DIR="${2:-$MODELS_DIR/$DEFAULT_NAME-mlx}"
 RAW_DIR="$(dirname "$TARGET_DIR")/$(basename "$TARGET_DIR" -mlx)-hf"
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -130,7 +133,7 @@ Converted MLX model ready:
   $TARGET_DIR
 
 Use it:
-  bun run transcribe path/to/audio.m4a --model $TARGET_DIR
+  transcribe path/to/audio.m4a --model $TARGET_DIR
 
 The HF-format source files are kept at:
   $RAW_DIR

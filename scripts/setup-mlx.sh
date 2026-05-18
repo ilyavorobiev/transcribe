@@ -19,6 +19,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Inherited from setup-all.sh; falls back to <repo>/models for standalone runs.
+MODELS_DIR="${TRANSCRIBE_MODELS_DIR:-$ROOT/models}"
 SKIP_MODEL=0
 for arg in "$@"; do
   case "$arg" in
@@ -86,9 +88,10 @@ cat <<EOF
 Setup complete.
   mlx_whisper : $(command -v mlx_whisper)
   ffmpeg      : $(command -v ffmpeg)
+  models dir  : $MODELS_DIR
 
 Try it:
-  bun run transcribe path/to/memo.m4a
-  bun run transcribe path/to/memo.m4a --model bond005-turbo
-  bun run transcribe path/to/memo.m4a --prompt "Обсуждаем MCP, API, latency."
+  transcribe path/to/memo.m4a
+  transcribe path/to/memo.m4a --model bond005-turbo
+  transcribe path/to/memo.m4a --prompt "Обсуждаем MCP, API, latency."
 EOF

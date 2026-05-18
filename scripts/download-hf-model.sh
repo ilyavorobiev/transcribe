@@ -48,7 +48,8 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$TARGET_DIR" ]; then
-  TARGET_DIR="$ROOT/models/$(basename "$HF_REPO")"
+  MODELS_DIR="${TRANSCRIBE_MODELS_DIR:-$ROOT/models}"
+  TARGET_DIR="$MODELS_DIR/$(basename "$HF_REPO")"
 fi
 
 if ! command -v curl >/dev/null 2>&1; then

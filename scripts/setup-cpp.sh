@@ -2,8 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VENDOR="$ROOT/vendor"
-MODELS="$ROOT/models"
+# When invoked via setup-all.sh, these point at the cache dir. When invoked
+# standalone (`bun run setup:cpp`), fall back to the legacy <repo>/{vendor,
+# models} layout so local dev keeps working.
+VENDOR="${TRANSCRIBE_VENDOR_DIR:-$ROOT/vendor}"
+MODELS="${TRANSCRIBE_MODELS_DIR:-$ROOT/models}"
 WHISPER_DIR="$VENDOR/whisper.cpp"
 MODEL_NAME="${MODEL:-large-v3}"
 
@@ -109,5 +112,5 @@ Sanity check:
   "$WHISPER_BIN" --help | head -5
 
 Try it:
-  bun run transcribe path/to/memo.m4a --engine cpp
+  transcribe path/to/memo.m4a --engine cpp
 EOF

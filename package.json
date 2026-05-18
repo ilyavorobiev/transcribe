@@ -1,12 +1,60 @@
 {
-  "name": "transcriber",
+  "name": "@ilyavorobiev/transcribe",
   "version": "0.1.0",
+  "description": "Offline transcription of iPhone voice memos on macOS — 3 engines (mlx/cpp/gigaam) optimized for Russian",
+  "license": "MIT",
+  "author": "Ilya Vorobiev",
+  "homepage": "https://github.com/ilyavorobiev/transcribe",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ilyavorobiev/transcribe.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ilyavorobiev/transcribe/issues"
+  },
+  "keywords": [
+    "whisper",
+    "whisper.cpp",
+    "mlx-whisper",
+    "gigaam",
+    "transcribe",
+    "speech-to-text",
+    "stt",
+    "asr",
+    "russian",
+    "m4a",
+    "voice-memo",
+    "macos",
+    "apple-silicon",
+    "metal",
+    "cli",
+    "offline"
+  ],
   "type": "module",
-  "private": true,
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "os": ["darwin"],
   "bin": {
     "transcribe": "./src/cli.ts"
   },
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "scripts/setup-all.sh",
+    "scripts/setup-mlx.sh",
+    "scripts/setup-cpp.sh",
+    "scripts/convert-hf-to-mlx.sh",
+    "scripts/download-hf-model.sh",
+    "scripts/gigaam_transcribe.py",
+    "scripts/postinstall.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
+    "postinstall": "bun run scripts/postinstall.ts || true",
     "transcribe": "bun run src/cli.ts",
     "test": "bun test src",
     "typecheck": "bunx tsc --noEmit",

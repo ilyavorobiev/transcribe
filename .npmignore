@@ -1,0 +1,59 @@
+# Belt-and-suspenders with package.json `files` allowlist.
+# `files` is authoritative; this file just makes accidents impossible.
+
+# Source-control internals
+.git/
+.gitignore
+.gitattributes
+
+# Dev-only tooling
+.github/
+.vscode/
+.idea/
+.editorconfig
+.prettierrc*
+.eslintrc*
+.eslintignore
+
+# Bun / Node artifacts
+node_modules/
+bun.lockb
+bun.lock
+*.log
+*.tsbuildinfo
+coverage/
+.nyc_output/
+
+# Build / vendor (never publish — multi-GB)
+vendor/
+models/
+dist/
+build/
+*.tgz
+
+# Tests + spec/docs (dev-only)
+**/*.test.ts
+src/**/*.test.*
+specs/
+guidelines/
+AGENTS.md
+CLAUDE.md
+
+# Personal artifacts
+*.m4a
+*.wav
+PRD*.txt
+PRD*.srt
+PRD*.vtt
+PRD*.json
+.beads/
+.claude/
+
+# Env / secrets
+.env
+.env.*
+
+# macOS junk
+.DS_Store
+.AppleDouble
+.LSOverride

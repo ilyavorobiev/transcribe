@@ -1,31 +1,40 @@
 import { existsSync, renameSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { PROJECT_ROOT } from "../paths.ts";
+import { resolveModelDirPath } from "../paths.ts";
 import type { Engine, Format, TranscribeOptions } from "./types.ts";
 
 // Aliases for Russian fine-tunes point at LOCAL converted directories
-// (populated by `bun run setup` via scripts/convert-hf-to-mlx.sh). These
+// (populated by `transcribe setup` via scripts/convert-hf-to-mlx.sh). These
 // models are not in MLX format upstream and can't be auto-downloaded by
 // mlx_whisper; pointing the alias at the HF repo ID would trigger an
 // auto-download that stalls (see specs/mlx-russian/spec.md Field findings).
 //
+// LOCAL_MLX_SUBDIRS resolves at call time via resolveModelDirPath() so the
+// path tracks the active cache root (TRANSCRIBE_CACHE_DIR / XDG_CACHE_HOME /
+// macOS default / local-dev fallback).
+//
 // Aliases for stock multilingual models point at HF repo IDs under
 // mlx-community/ — those are pre-converted to MLX format and mlx_whisper
-// auto-fetches them fine.
-const MODEL_ALIASES: Record<string, string> = {
-  "antony66-russian": join(PROJECT_ROOT, "models", "antony66-russian-mlx"),
-  "bond005-turbo": join(PROJECT_ROOT, "models", "bond005-turbo-mlx"),
+// auto-fetches them fine, no local cache needed.
+const LOCAL_MLX_SUBDIRS: Record<string, string> = {
+  "antony66-russian": "antony66-russian-mlx",
+  "bond005-turbo": "bond005-turbo-mlx",
+};
+
+const HF_ALIASES: Record<string, string> = {
   "large-v3": "mlx-community/whisper-large-v3-mlx",
   "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
 };
 
 const SETUP_HINT: Record<string, string> = {
-  "antony66-russian": "bun run setup           # downloads + converts antony66",
-  "bond005-turbo": "bun run setup           # downloads + converts bond005 too",
+  "antony66-russian": "transcribe setup        # downloads + converts antony66",
+  "bond005-turbo": "transcribe setup        # downloads + converts bond005 too",
 };
 
 export function resolveModelRef(name: string): string {
-  return MODEL_ALIASES[name] ?? name;
+  const localSubdir = LOCAL_MLX_SUBDIRS[name];
+  if (localSubdir) return resolveModelDirPath(localSubdir);
+  return HF_ALIASES[name] ?? name;
 }
 
 export function isLocalModelPath(ref: string): boolean {

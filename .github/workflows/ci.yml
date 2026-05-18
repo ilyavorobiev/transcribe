@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Pinned to macos-14 (Apple Silicon) so the test environment matches
+    # the supported platform. macos-latest can swap arch silently — see
+    # specs/publish/spec.md risk table.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        env:
+          # postinstall is skip-only by design; flipping this env var avoids
+          # printing the install banner during CI.
+          TRANSCRIBE_SKIP_POSTINSTALL: "1"
+        run: bun install --frozen-lockfile
+
+      - name: TypeScript typecheck
+        run: bun run typecheck
+
+      # Pure tests — no ffmpeg, no whisper-cli, no mlx_whisper, no model
+      # download. The whole suite is argv-construction + option-resolver
+      # logic; should run in well under a second.
+      - name: Tests
+        run: bun run test

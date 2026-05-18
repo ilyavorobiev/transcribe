@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  publish:
+    runs-on: macos-14
+    permissions:
+      id-token: write   # required for npm provenance
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        env:
+          TRANSCRIBE_SKIP_POSTINSTALL: "1"
+        run: bun install --frozen-lockfile
+
+      - name: TypeScript typecheck
+        run: bun run typecheck
+
+      - name: Tests
+        run: bun run test
+
+      # Sanity gate: dry-run shows the exact file list that will hit npm.
+      # If files/.npmignore drift, this catches it before a bad publish.
+      - name: Publish dry-run
+        run: bun publish --dry-run --access public
+
+      - name: Publish to npm
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: bun publish --access public

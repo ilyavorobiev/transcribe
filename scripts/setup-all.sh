@@ -3,7 +3,7 @@
 # Single-shot setup: install both engines, download and convert all
 # default models. After this completes, the only thing left to do is:
 #
-#   bun run transcribe path/to/memo.m4a
+#   transcribe path/to/memo.m4a
 #
 # Steps (each is idempotent — re-runs skip work that's already done):
 #   1. Homebrew deps        (uv, ffmpeg, cmake, git)
@@ -23,6 +23,15 @@
 #   --no-mlx        skip MLX entirely (just install cpp + gigaam)
 #   --no-gigaam     skip GigaAM (saves ~4 GB; falls back to mlx + antony66
 #                   for Russian)
+#
+# Where artifacts go:
+#   Default: ~/Library/Caches/transcribe/{models,vendor}/ (survives
+#            `bun update -g` reinstalls).
+#   Override with TRANSCRIBE_CACHE_DIR=<path>, or XDG_CACHE_HOME=<path>
+#   (we'll append /transcribe).
+#   Local-dev backcompat: if running from a source checkout AND
+#   <repo>/models/ already has files, that path is preferred so the
+#   original author's existing downloads aren't orphaned.
 
 set -euo pipefail
 
@@ -45,6 +54,55 @@ for arg in "$@"; do
   esac
 done
 
+# --- Cache directory resolution ---------------------------------------------
+
+# Resolves MODELS_DIR and VENDOR_DIR (exported via TRANSCRIBE_MODELS_DIR /
+# TRANSCRIBE_VENDOR_DIR so child helper scripts pick them up). Mirrors
+# src/paths.ts cacheRoot() so the setup-time write target matches the
+# runtime read paths.
+resolve_artifact_dirs() {
+  local explicit_cache="${TRANSCRIBE_CACHE_DIR:-}"
+  local cache_root
+  if [ -n "$explicit_cache" ]; then
+    cache_root="$explicit_cache"
+  elif [ -n "${XDG_CACHE_HOME:-}" ]; then
+    cache_root="$XDG_CACHE_HOME/transcribe"
+  else
+    cache_root="$HOME/Library/Caches/transcribe"
+  fi
+
+  # Local-dev backcompat: when running from a source checkout (has .git or
+  # specs/) AND <repo>/models already has at least one big artifact, prefer
+  # those paths. Avoids re-downloading 20 GB on the original author's
+  # machine. The runtime resolver in src/paths.ts has the same fallback so
+  # the read path agrees with the write path.
+  local has_repo_models=0
+  if [ -d "$ROOT/models" ]; then
+    if find "$ROOT/models" -maxdepth 2 -type f -size +10M 2>/dev/null | head -1 | grep -q .; then
+      has_repo_models=1
+    fi
+  fi
+  local in_local_dev=0
+  if [ -d "$ROOT/.git" ] || [ -d "$ROOT/specs" ]; then
+    in_local_dev=1
+  fi
+
+  if [ -z "$explicit_cache" ] && [ "$in_local_dev" -eq 1 ] && [ "$has_repo_models" -eq 1 ]; then
+    MODELS_DIR="$ROOT/models"
+    VENDOR_DIR="$ROOT/vendor"
+    echo "==> Artifacts dir (local-dev backcompat): $ROOT/{models,vendor}"
+  else
+    MODELS_DIR="$cache_root/models"
+    VENDOR_DIR="$cache_root/vendor"
+    mkdir -p "$MODELS_DIR" "$VENDOR_DIR"
+    echo "==> Artifacts dir: $cache_root/{models,vendor}"
+  fi
+  export TRANSCRIBE_MODELS_DIR="$MODELS_DIR"
+  export TRANSCRIBE_VENDOR_DIR="$VENDOR_DIR"
+}
+
+resolve_artifact_dirs
+
 # --- Disk-space check --------------------------------------------------------
 
 REQ_GB=20
@@ -53,8 +111,10 @@ REQ_GB=20
 [ "$SKIP_BOND005" -eq 1 ] && REQ_GB=$((REQ_GB - 6))
 [ "$SKIP_GIGAAM" -eq 1 ] && REQ_GB=$((REQ_GB - 4))
 
-AVAIL_GB=$(df -k "$ROOT" | tail -1 | awk '{ printf "%d", $4/1024/1024 }')
-echo "==> Disk: ${AVAIL_GB} GB free, ~${REQ_GB} GB needed"
+# df the cache dir's parent (which definitely exists), not the cache dir
+# itself (which we may have just created).
+AVAIL_GB=$(df -k "$(dirname "$MODELS_DIR")" | tail -1 | awk '{ printf "%d", $4/1024/1024 }')
+echo "==> Disk: ${AVAIL_GB} GB free at $(dirname "$MODELS_DIR"), ~${REQ_GB} GB needed"
 if [ "$AVAIL_GB" -lt "$REQ_GB" ]; then
   echo "error: insufficient disk space (need ~${REQ_GB} GB, have ${AVAIL_GB} GB)" >&2
   echo "       free some up, or use --no-cpp / --no-bond005 to reduce." >&2
@@ -77,7 +137,7 @@ ensure() {
   fi
 }
 
-echo "==> Section 1/5: Homebrew dependencies"
+echo "==> Section 1/6: Homebrew dependencies"
 ensure uv
 ensure ffmpeg
 [ "$SKIP_CPP" -eq 0 ] && { ensure cmake; ensure git; }
@@ -85,9 +145,9 @@ ensure ffmpeg
 # --- Section 2: mlx-whisper --------------------------------------------------
 
 if [ "$SKIP_MLX" -eq 1 ]; then
-  echo "==> Section 2/5: skipping MLX (--no-mlx)"
+  echo "==> Section 2/6: skipping MLX (--no-mlx)"
 else
-  echo "==> Section 2/5: mlx-whisper"
+  echo "==> Section 2/6: mlx-whisper"
   if command -v mlx_whisper >/dev/null 2>&1; then
     echo "    already installed: $(command -v mlx_whisper)"
   else
@@ -99,26 +159,27 @@ fi
 # --- Section 3: whisper.cpp --------------------------------------------------
 
 if [ "$SKIP_CPP" -eq 1 ]; then
-  echo "==> Section 3/5: skipping whisper.cpp (--no-cpp)"
+  echo "==> Section 3/6: skipping whisper.cpp (--no-cpp)"
 else
-  echo "==> Section 3/5: whisper.cpp + ggml-large-v3 + Silero VAD"
+  echo "==> Section 3/6: whisper.cpp + ggml-large-v3 + Silero VAD"
   MODEL=large-v3 bash "$ROOT/scripts/setup-cpp.sh"
 fi
 
 # --- Section 4: antony66 (default Russian model) -----------------------------
 
 if [ "$SKIP_MLX" -eq 1 ]; then
-  echo "==> Section 4/5: skipping antony66 (--no-mlx)"
+  echo "==> Section 4/6: skipping antony66 (--no-mlx)"
 else
-  echo "==> Section 4/5: antony66/whisper-large-v3-russian → MLX"
-  # Explicit target dir matches the alias `antony66-russian` in
-  # src/engines/mlx.ts. Keep the names in sync.
-  if [ -f "$ROOT/models/antony66-russian-mlx/weights.safetensors" ]; then
-    echo "    already converted: models/antony66-russian-mlx/"
+  echo "==> Section 4/6: antony66/whisper-large-v3-russian → MLX"
+  # Target dir matches the alias `antony66-russian` subdir resolved by
+  # src/engines/mlx.ts. Keep names in sync.
+  ANTONY_DIR="$MODELS_DIR/antony66-russian-mlx"
+  if [ -f "$ANTONY_DIR/weights.safetensors" ]; then
+    echo "    already converted: $ANTONY_DIR"
   else
     bash "$ROOT/scripts/convert-hf-to-mlx.sh" \
       antony66/whisper-large-v3-russian \
-      "$ROOT/models/antony66-russian-mlx"
+      "$ANTONY_DIR"
   fi
 fi
 
@@ -128,39 +189,36 @@ if [ "$SKIP_MLX" -eq 1 ] || [ "$SKIP_BOND005" -eq 1 ]; then
   echo "==> Section 5/6: skipping bond005"
 else
   echo "==> Section 5/6: bond005/whisper-podlodka-turbo → MLX"
-  # Explicit target dir matches the alias `bond005-turbo`. Keep in sync.
-  if [ -f "$ROOT/models/bond005-turbo-mlx/weights.safetensors" ]; then
-    echo "    already converted: models/bond005-turbo-mlx/"
+  BOND005_DIR="$MODELS_DIR/bond005-turbo-mlx"
+  if [ -f "$BOND005_DIR/weights.safetensors" ]; then
+    echo "    already converted: $BOND005_DIR"
   else
     bash "$ROOT/scripts/convert-hf-to-mlx.sh" \
       bond005/whisper-podlodka-turbo \
-      "$ROOT/models/bond005-turbo-mlx"
+      "$BOND005_DIR"
   fi
 fi
 
-# --- Section 6: GigaAM-v3 (default Russian engine) ---------------------------
+# --- Section 6: GigaAM-v3 (opt-in 2nd-opinion Russian engine) ----------------
 
 if [ "$SKIP_GIGAAM" -eq 1 ]; then
   echo "==> Section 6/6: skipping GigaAM (--no-gigaam)"
 else
-  echo "==> Section 6/6: GigaAM-v3 (Sber, default for --language ru)"
-  # Download model files directly via curl — same robustness pattern as
-  # the Whisper Russian fine-tunes. Avoids huggingface_hub's stalling
-  # parallel downloader and the `from_pretrained(<repo-id>)` first-run
-  # latency. Tiny repo: ~420 MB at e2e_rnnt revision.
-  if [ -f "$ROOT/models/gigaam-v3-e2e-rnnt/pytorch_model.bin" ]; then
-    echo "    model files already present: models/gigaam-v3-e2e-rnnt/"
+  echo "==> Section 6/6: GigaAM-v3 (Sber, opt-in 2nd-opinion for ru)"
+  # Curl-based download (same robustness pattern as Whisper Russian
+  # fine-tunes — avoids huggingface_hub's stalling parallel downloader).
+  GIGAAM_DIR="$MODELS_DIR/gigaam-v3-e2e-rnnt"
+  if [ -f "$GIGAAM_DIR/pytorch_model.bin" ]; then
+    echo "    model files already present: $GIGAAM_DIR"
   else
     bash "$ROOT/scripts/download-hf-model.sh" \
       ai-sage/GigaAM-v3 \
-      "$ROOT/models/gigaam-v3-e2e-rnnt" \
+      "$GIGAAM_DIR" \
       --revision e2e_rnnt
   fi
-  # Warm the uv venv (resolves torch + transformers + pyannote + ~3 GB of
-  # wheels). Model load uses the local files we just downloaded.
   echo "    warming uv venv (first run: ~5 min for torch + transformers + pyannote)..."
   uv run --script "$ROOT/scripts/gigaam_transcribe.py" \
-    --model-repo "$ROOT/models/gigaam-v3-e2e-rnnt" \
+    --model-repo "$GIGAAM_DIR" \
     --revision main \
     --warm
 fi
@@ -170,23 +228,24 @@ fi
 cat <<EOF
 
 ==============================================================================
-Setup complete. Try transcribing now:
+Setup complete. Artifacts: $MODELS_DIR
 
-  bun run transcribe path/to/memo.m4a
+Try transcribing now:
+
+  transcribe path/to/memo.m4a
                               # default: mlx + antony66 for Russian,
                               #          mlx + large-v3 for other languages
 
-  bun run transcribe path/to/memo.m4a --model bond005-turbo
+  transcribe path/to/memo.m4a --model bond005-turbo
                               # MLX + bond005 (ru+en code-switching alt)
 
-  bun run transcribe path/to/memo.m4a --engine gigaam
+  transcribe path/to/memo.m4a --engine gigaam
                               # Sber GigaAM-v3 — opt-in 2nd-opinion engine
-                              # (didn't measurably beat antony66 on our test)
 
-  bun run transcribe path/to/memo.m4a --engine cpp
+  transcribe path/to/memo.m4a --engine cpp
                               # whisper.cpp + ggml-large-v3 + Silero VAD
 
-  bun run transcribe path/to/memo.m4a --prompt "Обсуждаем MCP, API, latency."
+  transcribe path/to/memo.m4a --prompt "Обсуждаем MCP, API, latency."
                               # vocabulary biasing (mlx/cpp only)
 
 EOF
