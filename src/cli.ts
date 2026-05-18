@@ -1,11 +1,20 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { cppEngine } from "./engines/cpp.ts";
 import { GIGAAM_SUPPORTED_FORMATS, gigaamEngine } from "./engines/gigaam.ts";
 import { mlxEngine } from "./engines/mlx.ts";
-import { ENGINES, FORMATS, type Engine, type EngineName, type Format } from "./engines/types.ts";
+import {
+  ENGINES,
+  FORMATS,
+  type Engine,
+  type EngineName,
+  type Format,
+  type ReadinessMissing,
+} from "./engines/types.ts";
 import { PROJECT_ROOT } from "./paths.ts";
+import { decideInstallAction } from "./install-prompt.ts";
 
 const TRANSCRIBE_FLAGS_HELP = `Options:
   --engine <name>    mlx | cpp | gigaam              (default: mlx)
@@ -16,6 +25,8 @@ const TRANSCRIBE_FLAGS_HELP = `Options:
   --prompt <text>    initial prompt (mlx/cpp only — vocabulary biasing)
   --threads <n>      decoder threads (cpp engine only; default: min(cpus, 8))
   --keep-wav         retain the intermediate 16kHz WAV (cpp engine only)
+  --auto-install     prompt to install missing engine if not ready (default on TTY)
+  --no-auto-install  fail-fast on missing engine (default in scripts / non-TTY)
   -h, --help         show this help
 
 Default model selection (when --model is omitted):
@@ -46,10 +57,14 @@ const HELP = `transcribe — offline transcription on macOS (mlx | cpp | gigaam)
 USAGE
   transcribe <file.m4a> [options]
                                     transcribe one audio file
-  transcribe setup [--no-cpp|--no-mlx|--no-gigaam|--no-bond005]
-                                    install engines + models (one-time, ~20 GB)
+  transcribe setup [--with cpp|--with gigaam|--with bond005|--full]
+                                    install engines + models (default: mlx + antony66, ~6 GB)
+  transcribe setup --full           install everything (~20 GB, ~15-30 min)
   transcribe setup:mlx              install only the mlx engine
   transcribe setup:cpp              install only the cpp engine
+  transcribe reinstall [<name>|--all]
+                                    wipe and re-install (default: minimal set; <name> = one
+                                    component; --all = everything currently installed)
   transcribe --version              print version
   transcribe --help                 show this help
 
@@ -63,6 +78,8 @@ ${TRANSCRIBE_FLAGS_HELP}`;
 
 export class UserError extends Error {}
 
+export type AutoInstallFlag = "auto" | "no-auto" | "default";
+
 export interface CliOptions {
   input: string;
   engine: EngineName | undefined;
@@ -73,6 +90,7 @@ export interface CliOptions {
   prompt: string | undefined;
   threads: number | undefined;
   keepWav: boolean;
+  autoInstall: AutoInstallFlag;
 }
 
 const SETUP_SCRIPTS = {
@@ -91,6 +109,38 @@ export type Route =
   | { kind: "version" }
   | { kind: "help" };
 
+// Model aliases users might type with `reinstall` — accept either the
+// alias from the engine code (antony66-russian) or the install-item name
+// (antony66). Map back to the canonical install item so the bash
+// orchestrator sees stable names.
+const REINSTALL_ALIASES: Record<string, string> = {
+  "antony66-russian": "antony66",
+  "antony66": "antony66",
+  "bond005-turbo": "bond005",
+  "bond005": "bond005",
+  "mlx": "mlx",
+  "cpp": "cpp",
+  "gigaam": "gigaam",
+  "gigaam-v3": "gigaam",
+};
+
+// reinstall <name>?  →  setup --wipe (--with name | --full)
+// Pure: returns the synthesized argv for the setup script.
+export function reinstallToSetupArgv(args: readonly string[]): readonly string[] {
+  if (args.length === 0) return ["--wipe", "--force"];
+  if (args.length === 1 && args[0] === "--all") return ["--wipe", "--force", "--full"];
+  if (args.length === 1) {
+    const item = REINSTALL_ALIASES[args[0]!];
+    if (!item) {
+      throw new UserError(
+        `Unknown reinstall target: '${args[0]}'. Known: ${Object.keys(REINSTALL_ALIASES).join(", ")}, --all`,
+      );
+    }
+    return ["--wipe", "--force", "--with", item];
+  }
+  throw new UserError(`reinstall takes at most one argument or --all`);
+}
+
 // Pure routing: argv[0] decides. Sub-flags pass through unchanged. We only
 // intercept --version / --help at position 0 so `transcribe foo.m4a --help`
 // still falls through to the per-flag help in parseArgs.
@@ -98,6 +148,13 @@ export function routeArgs(argv: readonly string[]): Route {
   const first = argv[0];
   if (first === "--version" || first === "-v") return { kind: "version" };
   if (first === "--help" || first === "-h") return { kind: "help" };
+  if (first === "reinstall") {
+    return {
+      kind: "setup",
+      subcommand: "setup",
+      argv: reinstallToSetupArgv(argv.slice(1)),
+    };
+  }
   if (first !== undefined && (SUBCOMMAND_NAMES as readonly string[]).includes(first)) {
     return {
       kind: "setup",
@@ -130,6 +187,7 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     prompt: undefined as string | undefined,
     threads: undefined as number | undefined,
     keepWav: false,
+    autoInstall: "default" as AutoInstallFlag,
   };
   const positional: string[] = [];
 
@@ -144,6 +202,8 @@ export function parseArgs(argv: readonly string[]): CliOptions {
       case "--prompt": opts.prompt = readValue(argv, ++i, a); break;
       case "--threads": opts.threads = parseThreads(readValue(argv, ++i, a)); break;
       case "--keep-wav": opts.keepWav = true; break;
+      case "--auto-install": opts.autoInstall = "auto"; break;
+      case "--no-auto-install": opts.autoInstall = "no-auto"; break;
       case "-h":
       case "--help":
         process.stdout.write(TRANSCRIBE_HELP);
@@ -288,6 +348,14 @@ async function runTranscribe(argv: readonly string[]): Promise<void> {
     console.error(`(using: --engine ${engineName} --model ${model})`);
   }
 
+  // Readiness gate: ask the engine if it can run; if not, either prompt
+  // the user to install (TTY) or fail with the install command (non-TTY).
+  const readiness = engine.checkReady({ model, language: opts.language });
+  if (!readiness.ready) {
+    const shouldRun = await handleNotReady(engineName, readiness, opts.autoInstall);
+    if (!shouldRun) process.exit(1);
+  }
+
   try {
     await engine.transcribe({
       inputPath: inputAbs,
@@ -304,6 +372,70 @@ async function runTranscribe(argv: readonly string[]): Promise<void> {
     console.error(`error: ${(e as Error).message}`);
     process.exit(2);
   }
+}
+
+// Returns true if installation succeeded and the caller should proceed
+// with transcription; false on user-declined / non-TTY-fail-fast / install-
+// failure. process.exit happens at the call site, not here, so this stays
+// testable.
+async function handleNotReady(
+  engineName: EngineName,
+  readiness: ReadinessMissing,
+  flag: AutoInstallFlag,
+): Promise<boolean> {
+  const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const action = decideInstallAction({
+    isTty,
+    env: { TRANSCRIBE_AUTO_INSTALL: process.env.TRANSCRIBE_AUTO_INSTALL },
+    flag,
+  });
+
+  const summary =
+    `error: ${engineName} engine is not ready\n` +
+    `  missing:\n    ${readiness.missing.join("\n    ")}\n` +
+    `  install (~${readiness.sizeGb} GB, ~${readiness.etaMin} min): ` +
+    `${readiness.installCmd.join(" ")}`;
+
+  if (action === "fail-fast") {
+    console.error(summary);
+    if (!isTty) {
+      console.error("(non-interactive; not prompting. " +
+        "Re-run with --auto-install + a TTY to enable in-place install.)");
+    }
+    return false;
+  }
+
+  // Prompt path.
+  console.error(summary);
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const answer = await rl.question("\nInstall now? [Y/n] ");
+  rl.close();
+  if (!isAffirmative(answer)) {
+    console.error("declined; aborting.");
+    return false;
+  }
+  console.error("==> Installing...");
+  const proc = Bun.spawn({
+    cmd: ["bash", setupScriptPath("setup"), ...readiness.installCmd.slice(2)],
+    stdout: "inherit",
+    stderr: "inherit",
+    stdin: "inherit",
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    console.error(`install failed (exit ${code}); aborting.`);
+    return false;
+  }
+  console.error("==> Install complete. Resuming transcription.");
+  return true;
+}
+
+export function isAffirmative(answer: string): boolean {
+  const a = answer.trim().toLowerCase();
+  // Default = Y; only N variants reject. Y/yes/y/да all accepted.
+  if (a === "" || a === "y" || a === "yes" || a === "да") return true;
+  if (a === "n" || a === "no" || a === "нет") return false;
+  return false;
 }
 
 async function main(): Promise<void> {

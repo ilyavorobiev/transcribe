@@ -1,7 +1,13 @@
 import { existsSync, renameSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { resolveModelDirPath } from "../paths.ts";
-import type { Engine, Format, TranscribeOptions } from "./types.ts";
+import type {
+  Engine,
+  Format,
+  ReadinessCheckArgs,
+  ReadinessReport,
+  TranscribeOptions,
+} from "./types.ts";
 
 // Aliases for Russian fine-tunes point at LOCAL converted directories
 // (populated by `transcribe setup` via scripts/convert-hf-to-mlx.sh). These
@@ -88,8 +94,41 @@ export function sanitizeOutputName(stem: string): string {
   return stem.replace(/\./g, "_");
 }
 
+// Per-alias install footprint estimates. The default antony66-russian path
+// includes the mlx-whisper venv (~1 GB) + the HF download (~3 GB) + the
+// converted MLX dir (~3 GB) but assumes -hf is cleaned, so ~4 GB net.
+const INSTALL_ESTIMATE: Record<string, { sizeGb: number; etaMin: number; withArg: string }> = {
+  "antony66-russian": { sizeGb: 4, etaMin: 8, withArg: "mlx" },
+  "bond005-turbo": { sizeGb: 6, etaMin: 10, withArg: "bond005" },
+};
+
+export function mlxCheckReady(args: ReadinessCheckArgs): ReadinessReport {
+  const missing: string[] = [];
+  // Pass PATH explicitly so process.env.PATH mutations (in tests, or if the
+  // user just installed something) are picked up. Bun.which() with no
+  // options reads PATH from the process start-up snapshot.
+  if (!Bun.which("mlx_whisper", { PATH: process.env.PATH })) {
+    missing.push("mlx_whisper binary (uv tool install mlx-whisper)");
+  }
+  const modelRef = resolveModelRef(args.model);
+  if (isLocalModelPath(modelRef) && !existsSync(join(modelRef, "weights.safetensors"))) {
+    missing.push(`${args.model} MLX model (${modelRef})`);
+  }
+  if (missing.length === 0) return { ready: true };
+
+  const est = INSTALL_ESTIMATE[args.model] ?? { sizeGb: 4, etaMin: 8, withArg: "mlx" };
+  return {
+    ready: false,
+    missing,
+    installCmd: ["transcribe", "setup", "--with", est.withArg],
+    sizeGb: est.sizeGb,
+    etaMin: est.etaMin,
+  };
+}
+
 export const mlxEngine: Engine = {
   name: "mlx",
+  checkReady: mlxCheckReady,
   async transcribe(opts: TranscribeOptions): Promise<void> {
     const outputDir = dirname(opts.outputStem);
     const finalStem = basename(opts.outputStem);

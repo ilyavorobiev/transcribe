@@ -3,8 +3,10 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  isAffirmative,
   parseArgs,
   readPackageVersion,
+  reinstallToSetupArgv,
   resolveEngine,
   resolveModel,
   resolveOutputStem,
@@ -37,6 +39,7 @@ test("parseArgs defaults (no --engine, no --model)", () => {
     prompt: undefined,
     threads: undefined,
     keepWav: false,
+    autoInstall: "default",
   });
 });
 
@@ -270,4 +273,92 @@ test("readPackageVersion returns the version from package.json", () => {
   // Just verify shape: matches MAJOR.MINOR.PATCH. The exact value is the
   // version we publish, so don't hardcode it.
   expect(readPackageVersion()).toMatch(/^\d+\.\d+\.\d+/);
+});
+
+// -- reinstall route ---------------------------------------------------------
+
+test("routeArgs: reinstall with no args → setup --wipe --force", () => {
+  expect(routeArgs(["reinstall"])).toEqual({
+    kind: "setup",
+    subcommand: "setup",
+    argv: ["--wipe", "--force"],
+  });
+});
+
+test("routeArgs: reinstall --all → setup --wipe --force --full", () => {
+  expect(routeArgs(["reinstall", "--all"])).toEqual({
+    kind: "setup",
+    subcommand: "setup",
+    argv: ["--wipe", "--force", "--full"],
+  });
+});
+
+test("reinstallToSetupArgv accepts both alias and canonical names", () => {
+  // antony66-russian (alias from src/engines/mlx.ts) → antony66 (install item)
+  expect(reinstallToSetupArgv(["antony66-russian"]))
+    .toEqual(["--wipe", "--force", "--with", "antony66"]);
+  expect(reinstallToSetupArgv(["antony66"]))
+    .toEqual(["--wipe", "--force", "--with", "antony66"]);
+  // bond005-turbo / bond005
+  expect(reinstallToSetupArgv(["bond005-turbo"]))
+    .toEqual(["--wipe", "--force", "--with", "bond005"]);
+  expect(reinstallToSetupArgv(["bond005"]))
+    .toEqual(["--wipe", "--force", "--with", "bond005"]);
+  // engines
+  expect(reinstallToSetupArgv(["mlx"]))
+    .toEqual(["--wipe", "--force", "--with", "mlx"]);
+  expect(reinstallToSetupArgv(["cpp"]))
+    .toEqual(["--wipe", "--force", "--with", "cpp"]);
+  expect(reinstallToSetupArgv(["gigaam"]))
+    .toEqual(["--wipe", "--force", "--with", "gigaam"]);
+  // gigaam-v3 (model alias) → gigaam (install item)
+  expect(reinstallToSetupArgv(["gigaam-v3"]))
+    .toEqual(["--wipe", "--force", "--with", "gigaam"]);
+});
+
+test("reinstallToSetupArgv rejects unknown target", () => {
+  expect(() => reinstallToSetupArgv(["bogus"])).toThrow(UserError);
+});
+
+test("reinstallToSetupArgv rejects multi-arg (other than --all)", () => {
+  expect(() => reinstallToSetupArgv(["a", "b"])).toThrow(UserError);
+});
+
+// -- parseArgs autoInstall ---------------------------------------------------
+
+test("parseArgs --auto-install sets autoInstall=auto", () => {
+  expect(parseArgs(["foo.m4a", "--auto-install"]).autoInstall).toBe("auto");
+});
+
+test("parseArgs --no-auto-install sets autoInstall=no-auto", () => {
+  expect(parseArgs(["foo.m4a", "--no-auto-install"]).autoInstall).toBe("no-auto");
+});
+
+test("parseArgs without flag → default", () => {
+  expect(parseArgs(["foo.m4a"]).autoInstall).toBe("default");
+});
+
+// -- isAffirmative -----------------------------------------------------------
+
+test("isAffirmative: blank Enter (default) accepts", () => {
+  expect(isAffirmative("")).toBe(true);
+  expect(isAffirmative("   ")).toBe(true);
+});
+
+test("isAffirmative: y/Y/yes accepted (case-insensitive)", () => {
+  for (const s of ["y", "Y", "yes", "Yes", "YES", "  y  ", "да", "ДА"]) {
+    expect(isAffirmative(s)).toBe(true);
+  }
+});
+
+test("isAffirmative: n/no rejects", () => {
+  for (const s of ["n", "N", "no", "No", "NO", "  n  ", "нет"]) {
+    expect(isAffirmative(s)).toBe(false);
+  }
+});
+
+test("isAffirmative: gibberish rejects (better safe than sorry)", () => {
+  expect(isAffirmative("maybe")).toBe(false);
+  expect(isAffirmative("sure")).toBe(false);
+  expect(isAffirmative("¯\\_(ツ)_/¯")).toBe(false);
 });

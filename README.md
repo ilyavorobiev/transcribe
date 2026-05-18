@@ -21,9 +21,16 @@ PRs are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ```sh
 bun add -g @ilyavorobiev/transcribe
-transcribe setup            # one-time, ~15–30 min, ~20 GB
+transcribe setup            # one-time, ~6 GB, ~8 min (mlx + antony66)
 transcribe memo.m4a         # produces memo.txt next to memo.m4a
 ```
+
+The minimal default install gets you Russian transcription with the
+mlx engine. Other engines (`whisper.cpp` for offline-strict, `gigaam`
+for an opt-in 2nd-opinion) are one flag away — see [Disk
+footprint](#disk-footprint) below. If you run `transcribe <file>
+--engine gigaam` without gigaam installed, the CLI prompts you to
+install it in place.
 
 ## Why three engines
 
@@ -55,24 +62,50 @@ the reasoning).
 
 ## Disk footprint
 
-Full setup pulls ~20 GB. Trim with engine-skip flags:
+Default install is the smallest useful set: **mlx engine + antony66
+Russian fine-tune. ~6 GB, ~8 min.** Add opt-in components with
+`--with`:
 
 ```sh
-transcribe setup --no-cpp        # skip whisper.cpp + ggml model (~17 GB)
-transcribe setup --no-bond005    # skip bond005 fine-tune (~14 GB)
-transcribe setup --no-gigaam     # skip GigaAM (~16 GB)
-transcribe setup --no-mlx        # skip MLX entirely (cpp + gigaam only)
+transcribe setup --with cpp                  # add whisper.cpp (~+4 GB)
+transcribe setup --with gigaam               # add GigaAM (~+4 GB)
+transcribe setup --with bond005              # add bond005 ru+en fine-tune (~+4 GB)
+transcribe setup --with cpp --with gigaam    # combine
+transcribe setup --full                      # everything (~20 GB)
 ```
 
-Per-engine single-shot installs:
+Per-engine single-shot installs (for narrow setups):
 
 ```sh
 transcribe setup:mlx             # only the mlx engine + Russian fine-tune
 transcribe setup:cpp             # only whisper.cpp + ggml-large-v3 + VAD
 ```
 
+When you run a command whose engine isn't installed, the CLI prompts
+you to install it in place (TTY only — scripts get a fail-fast error
+with the install command). Disable the prompt with `--no-auto-install`
+or `TRANSCRIBE_AUTO_INSTALL=0`.
+
+To wipe and re-install something (corrupted download, transformers
+version drift, etc.):
+
+```sh
+transcribe reinstall                       # the minimal default set
+transcribe reinstall antony66-russian      # one model
+transcribe reinstall gigaam                # one engine
+transcribe reinstall --all                 # everything currently installed
+```
+
 Models and the whisper.cpp build live under `~/Library/Caches/transcribe/`
-by default, so a `bun update -g` doesn't wipe ~20 GB of downloads.
+by default (override with `TRANSCRIBE_CACHE_DIR`), so a `bun update -g`
+doesn't wipe gigabytes of downloads. Conversion intermediates (the `-hf`
+source dirs and whisper.cpp CMake objects) are auto-cleaned after a
+strict sanity check — opt out with `TRANSCRIBE_KEEP_HF=1` /
+`TRANSCRIBE_KEEP_BUILD=1` if you're debugging.
+
+> The legacy `--no-cpp`, `--no-mlx`, `--no-gigaam`, `--no-bond005`
+> flags are still honored (with a deprecation warning) and will be
+> removed in `1.0.0`. Use `--with` and `--full` instead.
 
 ## Usage
 
@@ -89,10 +122,16 @@ Options:
   --prompt <text>    initial prompt (mlx/cpp — vocabulary biasing)
   --threads <n>      decoder threads                (cpp only)
   --keep-wav         retain the intermediate 16kHz WAV (cpp only)
+  --auto-install     prompt to install missing engine if not ready (default on TTY)
+  --no-auto-install  fail-fast on missing engine (default in scripts / non-TTY)
   -h, --help         show this help
 
-  transcribe setup [--no-cpp|--no-mlx|--no-bond005|--no-gigaam]
-  transcribe setup:mlx | setup:cpp
+  transcribe setup [--with cpp|--with gigaam|--with bond005|--full]
+                                                   default: minimal (mlx + antony66)
+  transcribe setup --clean                         remove intermediary files only
+  transcribe setup --force                         re-download even if present
+  transcribe setup:mlx | setup:cpp                 single-engine installs
+  transcribe reinstall [<name>|--all]              wipe + reinstall
   transcribe --version
 ```
 
@@ -106,10 +145,13 @@ transcribe memo.m4a --prompt "Обсуждаем MCP, API, latency, RAG, GPT-4."
 
 | Variable                       | Effect                                                                  |
 | ------------------------------ | ----------------------------------------------------------------------- |
-| `TRANSCRIBE_CACHE_DIR`         | Root for models + the whisper.cpp build (default `~/Library/Caches/transcribe/`). |
+| `TRANSCRIBE_CACHE_DIR`         | Root for models + the whisper.cpp build (default `~/Library/Caches/transcribe/`). Hard override: disables the local-dev fallback to `<repo>/{models,vendor}`. |
 | `XDG_CACHE_HOME`               | If set, default cache becomes `$XDG_CACHE_HOME/transcribe`.             |
 | `WHISPER_BIN`                  | Explicit override for the `whisper-cli` binary path (cpp engine).       |
 | `WHISPER_MODEL_DIR`            | Explicit override for the ggml-`<name>`.bin lookup (cpp engine).        |
+| `TRANSCRIBE_AUTO_INSTALL`      | `0`/`false`/`no` → never prompt to install (fail-fast). `1`/`true`/`yes` → prompt iff TTY. Default = prompt iff TTY. |
+| `TRANSCRIBE_KEEP_HF`           | If truthy, keep the `-hf` source directory after MLX conversion (saves ~3 GB normally; useful when debugging a bad conversion). |
+| `TRANSCRIBE_KEEP_BUILD`        | If truthy, keep whisper.cpp `build/CMakeFiles/` after a successful build (saves ~200 MB normally; useful when iterating on whisper.cpp). |
 | `TRANSCRIBE_SKIP_POSTINSTALL`  | If truthy (`1`/`true`/`yes`), the postinstall banner is silent.         |
 | `CI`                           | If truthy, postinstall is skipped (avoids polluting CI logs).           |
 
@@ -117,7 +159,8 @@ transcribe memo.m4a --prompt "Обсуждаем MCP, API, latency, RAG, GPT-4."
 
 **`Model file not found`** or **`model 'antony66-russian' resolves to … but that directory doesn't exist`**
 — You haven't run setup yet. Run `transcribe setup` (or the narrower
-`transcribe setup:mlx`).
+`transcribe setup:mlx`). If you previously installed and the dir got
+clobbered, `transcribe reinstall antony66-russian` re-downloads it.
 
 **HF download stalls in CLOSE_WAIT during setup** — known issue with
 HuggingFace's parallel Python downloader on big multi-file Russian

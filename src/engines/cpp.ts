@@ -2,7 +2,13 @@ import { existsSync } from "node:fs";
 import { cpus } from "node:os";
 import { modelPath, whisperBinaryPath } from "../paths.ts";
 import { preprocess } from "../audio.ts";
-import type { Engine, Format, TranscribeOptions } from "./types.ts";
+import type {
+  Engine,
+  Format,
+  ReadinessCheckArgs,
+  ReadinessReport,
+  TranscribeOptions,
+} from "./types.ts";
 
 const FORMAT_FLAGS = {
   txt: "-otxt",
@@ -60,8 +66,37 @@ export function whisperArgv(opts: CppArgs): string[] {
   return args;
 }
 
+export function cppCheckReady(args: ReadinessCheckArgs): ReadinessReport {
+  const missing: string[] = [];
+  // Bin lookup: wrap whisperBinaryPath() — it throws on miss. We want a
+  // non-throwing readiness check.
+  try {
+    whisperBinaryPath();
+  } catch {
+    missing.push("whisper-cli binary (built from source by setup --with cpp)");
+  }
+  try {
+    modelPath(args.model);
+  } catch {
+    missing.push(`ggml-${args.model}.bin model file`);
+  }
+  if (!Bun.which("ffmpeg", { PATH: process.env.PATH })) {
+    missing.push("ffmpeg (brew install ffmpeg)");
+  }
+
+  if (missing.length === 0) return { ready: true };
+  return {
+    ready: false,
+    missing,
+    installCmd: ["transcribe", "setup", "--with", "cpp"],
+    sizeGb: 4,
+    etaMin: 7,
+  };
+}
+
 export const cppEngine: Engine = {
   name: "cpp",
+  checkReady: cppCheckReady,
   async transcribe(opts: TranscribeOptions): Promise<void> {
     const wav = await preprocess({ input: opts.inputPath, keepWav: opts.keepWav ?? false });
     try {

@@ -48,6 +48,17 @@ if [ ! -x "$WHISPER_BIN" ]; then
   exit 1
 fi
 
+# Clean CMake intermediates (~200 MB of .o files) once we have a working
+# binary. Keep bin/whisper-cli + the .dylibs it links. Opt-out with
+# TRANSCRIBE_KEEP_BUILD=1 (useful when iterating on whisper.cpp itself).
+if [ -z "${TRANSCRIBE_KEEP_BUILD:-}" ]; then
+  if [ -d "$WHISPER_DIR/build/CMakeFiles" ]; then
+    echo "==> Cleaning build intermediates (CMakeFiles + *.o)"
+    rm -rf "$WHISPER_DIR/build/CMakeFiles"
+    find "$WHISPER_DIR/build" -name '*.o' -delete 2>/dev/null || true
+  fi
+fi
+
 MODEL_FILE="$MODELS/ggml-$MODEL_NAME.bin"
 
 # Minimum plausible size per model — if the file is smaller, treat as

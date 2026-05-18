@@ -1,5 +1,32 @@
-import { expect, test } from "bun:test";
-import { mlxArgv, resolveModelRef, sanitizeOutputName, type MlxArgs } from "./mlx.ts";
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  mlxArgv,
+  mlxCheckReady,
+  resolveModelRef,
+  sanitizeOutputName,
+  type MlxArgs,
+} from "./mlx.ts";
+
+const originalEnv = {
+  PATH: process.env.PATH,
+  TRANSCRIBE_CACHE_DIR: process.env.TRANSCRIBE_CACHE_DIR,
+};
+const tempDirs: string[] = [];
+function tmp(): string {
+  const d = mkdtempSync(join(tmpdir(), "mlx-test-"));
+  tempDirs.push(d);
+  return d;
+}
+afterEach(() => {
+  for (const [key, value] of Object.entries(originalEnv) as Array<[keyof typeof originalEnv, string | undefined]>) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true });
+});
 
 const base: MlxArgs = {
   inputPath: "/in/memo.m4a",
@@ -78,4 +105,55 @@ test("sanitizeOutputName replaces dots with underscores (workaround for mlx_whis
   expect(sanitizeOutputName("memo.2025-05-17")).toBe("memo_2025-05-17");
   expect(sanitizeOutputName("plain")).toBe("plain");
   expect(sanitizeOutputName("a.b.c.d")).toBe("a_b_c_d");
+});
+
+// -- mlxCheckReady -----------------------------------------------------------
+
+// Test setup: point PATH at an empty dir so Bun.which("mlx_whisper") returns
+// null; point TRANSCRIBE_CACHE_DIR at a tmp dir we control.
+
+test("mlxCheckReady: cache empty + no mlx_whisper on PATH → missing both", () => {
+  const cache = tmp();
+  process.env.PATH = tmp(); // empty dir
+  process.env.TRANSCRIBE_CACHE_DIR = cache;
+  const r = mlxCheckReady({ model: "antony66-russian", language: "ru" });
+  expect(r.ready).toBe(false);
+  if (!r.ready) {
+    expect(r.missing.some(m => m.includes("mlx_whisper"))).toBe(true);
+    expect(r.missing.some(m => m.includes("antony66-russian"))).toBe(true);
+    expect(r.installCmd).toEqual(["transcribe", "setup", "--with", "mlx"]);
+    expect(r.sizeGb).toBeGreaterThan(0);
+  }
+});
+
+test("mlxCheckReady: HF-alias model (large-v3) only needs the binary (no local dir check)", () => {
+  process.env.PATH = tmp(); // no mlx_whisper
+  const r = mlxCheckReady({ model: "large-v3", language: "en" });
+  expect(r.ready).toBe(false);
+  if (!r.ready) {
+    expect(r.missing).toEqual(["mlx_whisper binary (uv tool install mlx-whisper)"]);
+  }
+});
+
+test("mlxCheckReady: bond005 gets bigger install footprint than antony66", () => {
+  process.env.PATH = tmp();
+  const antony = mlxCheckReady({ model: "antony66-russian", language: "ru" });
+  const bond = mlxCheckReady({ model: "bond005-turbo", language: "ru" });
+  if (!antony.ready && !bond.ready) {
+    expect(bond.sizeGb).toBeGreaterThan(antony.sizeGb);
+    expect(bond.installCmd).toContain("bond005");
+  }
+});
+
+test("mlxCheckReady: present local model file + (assume) mlx_whisper available → ready", () => {
+  // We can't easily fake mlx_whisper on PATH without dropping a real
+  // executable in a tmp dir. Use the actual system binary if present;
+  // skip the assertion path on environments that don't have it.
+  if (!Bun.which("mlx_whisper")) return;
+  const cache = tmp();
+  process.env.TRANSCRIBE_CACHE_DIR = cache;
+  mkdirSync(join(cache, "models", "antony66-russian-mlx"), { recursive: true });
+  writeFileSync(join(cache, "models", "antony66-russian-mlx", "weights.safetensors"), "x".repeat(100));
+  const r = mlxCheckReady({ model: "antony66-russian", language: "ru" });
+  expect(r.ready).toBe(true);
 });

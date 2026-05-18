@@ -40,7 +40,8 @@ export function cacheVendorDir(): string {
 // Resolution order:
 //   1. WHISPER_BIN env (explicit override — single file)
 //   2. <cache>/vendor/whisper.cpp/build/bin/whisper-cli
-//   3. <repo>/vendor/whisper.cpp/build/bin/whisper-cli  (local dev only)
+//   3. <repo>/vendor/whisper.cpp/build/bin/whisper-cli  (local dev only,
+//      suppressed when TRANSCRIBE_CACHE_DIR is explicitly set)
 export function whisperBinaryPath(): string {
   const fromEnv = process.env.WHISPER_BIN;
   if (fromEnv) {
@@ -52,7 +53,8 @@ export function whisperBinaryPath(): string {
   const candidates = [
     join(cacheVendorDir(), "whisper.cpp", "build", "bin", "whisper-cli"),
   ];
-  if (isLocalDev()) {
+  const explicitCache = process.env.TRANSCRIBE_CACHE_DIR !== undefined;
+  if (!explicitCache && isLocalDev()) {
     candidates.push(join(PROJECT_ROOT, "vendor", "whisper.cpp", "build", "bin", "whisper-cli"));
   }
   for (const c of candidates) {
@@ -72,16 +74,18 @@ export function modelDir(): string {
 }
 
 // Search plausible locations for a ggml model file. WHISPER_MODEL_DIR is a
-// hard override (no fallback). Otherwise: cache dir, plus the legacy
-// <repo>/models fallback for local dev so the author's existing downloads
-// keep working.
+// hard override (no fallback). TRANSCRIBE_CACHE_DIR is also a hard override
+// — explicit env knobs disable local-dev fallback (parity with
+// resolveModelDirPath). Otherwise: cache dir + legacy <repo>/models fallback
+// for local dev so the author's existing downloads keep working.
 export function modelPath(name: string): string {
   const filename = `ggml-${name}.bin`;
   const envOverride = process.env.WHISPER_MODEL_DIR;
+  const explicitCache = process.env.TRANSCRIBE_CACHE_DIR !== undefined;
   const candidates = envOverride
     ? [join(envOverride, filename)]
     : [join(cacheModelsDir(), filename)];
-  if (!envOverride && isLocalDev()) {
+  if (!envOverride && !explicitCache && isLocalDev()) {
     candidates.push(join(PROJECT_ROOT, "models", filename));
   }
   for (const c of candidates) {
@@ -101,10 +105,16 @@ export function modelPath(name: string): string {
 // path (which may not yet exist). Callers should existsSync the result
 // themselves and emit a setup hint on miss — that's what
 // MissingLocalModelError / MissingGigaAmModelError already do.
+//
+// TRANSCRIBE_CACHE_DIR is a hard override: when set, the local-dev fallback
+// is suppressed (matches WHISPER_MODEL_DIR semantics in modelPath() — an
+// explicit env knob means "look here, not anywhere else"). XDG_CACHE_HOME
+// is the platform-default story and does NOT suppress the fallback.
 export function resolveModelDirPath(subdir: string): string {
   const cacheCandidate = join(cacheModelsDir(), subdir);
   if (existsSync(cacheCandidate)) return cacheCandidate;
-  if (isLocalDev()) {
+  const explicitCache = process.env.TRANSCRIBE_CACHE_DIR !== undefined;
+  if (!explicitCache && isLocalDev()) {
     const repoCandidate = join(PROJECT_ROOT, "models", subdir);
     if (existsSync(repoCandidate)) return repoCandidate;
   }

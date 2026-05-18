@@ -2,7 +2,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { preprocess } from "../audio.ts";
 import { PROJECT_ROOT, resolveModelDirPath } from "../paths.ts";
-import type { Engine, Format, TranscribeOptions } from "./types.ts";
+import type {
+  Engine,
+  Format,
+  ReadinessCheckArgs,
+  ReadinessReport,
+  TranscribeOptions,
+} from "./types.ts";
 
 export interface GigaAmModelRef {
   repo: string;
@@ -76,8 +82,33 @@ export function gigaamArgv(opts: GigaAmArgs): string[] {
   ];
 }
 
+export function gigaamCheckReady(args: ReadinessCheckArgs): ReadinessReport {
+  const missing: string[] = [];
+  if (!Bun.which("uv", { PATH: process.env.PATH })) {
+    missing.push("uv (brew install uv)");
+  }
+  if (!Bun.which("ffmpeg", { PATH: process.env.PATH })) {
+    missing.push("ffmpeg (brew install ffmpeg)");
+  }
+  const { repo } = resolveGigaAmModel(args.model);
+  if (isLocalRepo(repo) && !existsSync(join(repo, "pytorch_model.bin"))) {
+    missing.push(`${args.model} model files (${repo})`);
+  }
+  if (missing.length === 0) return { ready: true };
+  return {
+    ready: false,
+    missing,
+    installCmd: ["transcribe", "setup", "--with", "gigaam"],
+    // Includes one-time torch + transformers wheel download via uv (~3 GB)
+    // on first run; subsequent installs are just the 420 MB model dir.
+    sizeGb: 4,
+    etaMin: 8,
+  };
+}
+
 export const gigaamEngine: Engine = {
   name: "gigaam",
+  checkReady: gigaamCheckReady,
   async transcribe(opts: TranscribeOptions): Promise<void> {
     if (!GIGAAM_SUPPORTED_FORMATS.includes(opts.format)) {
       throw new Error(

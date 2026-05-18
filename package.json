@@ -1,6 +1,6 @@
 {
   "name": "@ilyavorobiev/transcribe",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Offline transcription of iPhone voice memos on macOS — 3 engines (mlx/cpp/gigaam) optimized for Russian",
   "license": "MIT",
   "author": "Ilya Vorobiev",

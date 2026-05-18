@@ -125,7 +125,60 @@ if [ -f "$TARGET_DIR/model.safetensors" ] && [ ! -f "$TARGET_DIR/weights.safeten
   mv "$TARGET_DIR/model.safetensors" "$TARGET_DIR/weights.safetensors"
 fi
 
-# --- 6. Done -----------------------------------------------------------------
+# --- 6. Sanity-check the conversion ------------------------------------------
+#
+# Before we delete the -hf source (~3 GB), verify the converted MLX dir
+# looks plausible. If any of these fail, we KEEP the source and ask the
+# user to file a bug — losing the source on a bad conversion is exactly
+# the failure mode the -hf dir is supposed to protect against.
+
+CLEANUP_OK=1
+
+WEIGHTS_FILE="$TARGET_DIR/weights.safetensors"
+if [ ! -f "$WEIGHTS_FILE" ]; then
+  echo "warning: sanity-check failed — weights.safetensors not found in $TARGET_DIR" >&2
+  CLEANUP_OK=0
+else
+  WEIGHTS_BYTES=$(stat -f %z "$WEIGHTS_FILE" 2>/dev/null || stat -c %s "$WEIGHTS_FILE")
+  MIN_BYTES=$((50 * 1024 * 1024))
+  if [ "$WEIGHTS_BYTES" -lt "$MIN_BYTES" ]; then
+    echo "warning: sanity-check failed — weights.safetensors is only $((WEIGHTS_BYTES / 1024 / 1024)) MB (< 50 MB minimum)" >&2
+    CLEANUP_OK=0
+  fi
+fi
+
+CONFIG_FILE="$TARGET_DIR/config.json"
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "warning: sanity-check failed — config.json missing in $TARGET_DIR" >&2
+  CLEANUP_OK=0
+elif ! python3 -c "import json,sys; c=json.load(open('$CONFIG_FILE')); assert c.get('model_type')=='whisper', 'model_type != whisper'" 2>/dev/null; then
+  echo "warning: sanity-check failed — config.json not parseable or model_type != 'whisper'" >&2
+  CLEANUP_OK=0
+fi
+
+if [ -f "$TARGET_DIR/pytorch_model.bin" ]; then
+  echo "warning: sanity-check failed — pytorch_model.bin present in MLX dir (HF source leaked into target)" >&2
+  CLEANUP_OK=0
+fi
+
+# --- 7. Auto-clean the -hf source --------------------------------------------
+
+if [ "$CLEANUP_OK" -eq 1 ] && [ -z "${TRANSCRIBE_KEEP_HF:-}" ]; then
+  if [ -d "$RAW_DIR" ]; then
+    echo "==> Sanity check passed; removing -hf source ($RAW_DIR) to reclaim ~3 GB"
+    rm -rf "$RAW_DIR"
+  fi
+elif [ "$CLEANUP_OK" -eq 0 ]; then
+  echo "==> Sanity check FAILED; keeping -hf source at $RAW_DIR for recovery"
+  echo "    If the converted model works, you can remove it manually:"
+  echo "      rm -rf $RAW_DIR"
+  echo "    If it doesn't, file an issue at https://github.com/ilyavorobiev/transcribe/issues"
+  echo "    and re-run with: transcribe reinstall $(basename "$TARGET_DIR" -mlx)"
+elif [ -n "${TRANSCRIBE_KEEP_HF:-}" ]; then
+  echo "==> TRANSCRIBE_KEEP_HF set; keeping -hf source at $RAW_DIR"
+fi
+
+# --- 8. Done -----------------------------------------------------------------
 
 cat <<EOF
 
@@ -134,8 +187,4 @@ Converted MLX model ready:
 
 Use it:
   transcribe path/to/audio.m4a --model $TARGET_DIR
-
-The HF-format source files are kept at:
-  $RAW_DIR
-(you can rm -rf this to reclaim ~3 GB once you're sure the conversion is good)
 EOF
