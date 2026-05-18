@@ -10,8 +10,7 @@ of work (an epic or version). The format is defined by
 | [`publish/`](./publish/spec.md)         | shipped 2026-05-17 | Public npm + GitHub release (`v0.1.0`) — `@ilyavorobiev/transcribe`. |
 | [`mlx-russian/`](./mlx-russian/spec.md) | implemented | Add MLX engine alongside cpp; default to Russian fine-tune (~35% WER drop). |
 | [`gigaam/`](./gigaam/spec.md)           | implemented | Add Sber GigaAM as third engine (opt-in 2nd-opinion for Russian; auto-route was tried and reverted — see spec §11). |
-| [`mcp-plugin/`](./mcp-plugin/spec.md)   | proposed    | MCP server + Claude Code plugin for local-host transcription (`v0.2.0`). |
-| [`install-optimization/`](./install-optimization/spec.md) | proposed    | Shrink default install (mlx+antony66 only), auto-clean intermediaries, install-on-demand, `reinstall` verb (`v0.2.x`). |
+| [`install-optimization/`](./install-optimization/spec.md) | proposed    | Shrink default install (mlx+antony66 only), auto-clean intermediaries, install-on-demand, `reinstall` verb (`v0.2.0`). |
 
 Each spec folder can hold related artifacts alongside `spec.md` (e.g.
 `prd.md`, diagrams, decision notes, benchmark scripts).

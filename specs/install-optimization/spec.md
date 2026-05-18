@@ -3,7 +3,7 @@
 ## 1. Meta Information
 
 - **Branch:** main
-- **Epic:** v0.2.x — shrink the first-install footprint, auto-clean
+- **Epic:** v0.2.0 — shrink the first-install footprint, auto-clean
   intermediaries, install-on-demand for opt-in engines, explicit
   reinstall verb
 - **PRD:** N/A (continuation of `specs/publish/spec.md`)
@@ -364,9 +364,8 @@ Then `transcribe reinstall <name>` is a thin alias.
 **Consequences:**
 - Eventually drop the `--no-*` flags entirely (in `v0.3.x` or
   `v1.0.0`).
-- `engine.checkReady()` becomes a reusable primitive — the MCP
-  plugin (`specs/mcp-plugin/spec.md`) will use it for the
-  `transcribe_setup_status` tool, no extra work.
+- `engine.checkReady()` becomes a reusable primitive — any future
+  surface that wants to ask "is this engine ready?" gets it for free.
 - The README badge for "~20 GB total" goes away; the prose updates
   to "~6 GB default, ~20 GB with everything".
 
@@ -491,9 +490,6 @@ warning) or silent (just a docs note).
 - Existing engine interface: `src/engines/types.ts`
 - Cache-dir resolution: `src/paths.ts` (introduced in
   [`../publish/spec.md`](../publish/spec.md) §6.6)
-- Related: [`../mcp-plugin/spec.md`](../mcp-plugin/spec.md) — the
-  `transcribe_setup_status` tool will be a thin wrapper over the
-  same `checkReady()` primitive added here.
 
 ## 11. Open Questions
 
