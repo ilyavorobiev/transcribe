@@ -5,22 +5,41 @@
 - **Branch:** `main`
 - **Epic:** v0.1.0 — public OSS release on npm + GitHub
 - **PRD:** N/A (personal OSS project)
+- **Status:** Proposed. Many of the §8.5 implementation tasks have already
+  landed as part of the engine-architecture work (`mlx-russian/`, `gigaam/`
+  specs). The remaining work is publish-specific (LICENSE, README rewrite,
+  CI, npm publish flow, postinstall hygiene). See §8.5 for the current cut.
 
 ## 2. Context
 
-The local CLI at `/Users/ivorobiev/Desktop/repos/transcriber/` works for the
-author. This spec covers what's needed to turn it into a **publishable,
-installable CLI** that any macOS user can `bun add -g` and use.
+The local CLI works on the author's machine. This spec covers what's needed
+to turn it into a **publishable, installable CLI** that any macOS user can
+`bun add -g` and use.
+
+Since this spec was originally written, the architecture has grown
+substantially:
+
+- **Three engines** (mlx default, cpp opt-in, gigaam opt-in) — see
+  `specs/mlx-russian/spec.md` and `specs/gigaam/spec.md`.
+- **`bun run setup`** is a single orchestrator that installs all three
+  engines and ~20 GB of models in one shot. Idempotent.
+- **55 unit tests** across 6 files. Pure argv-construction; no external
+  binaries needed to run them.
+- **Engine interface** at `src/engines/types.ts`; each engine is a thin
+  wrapper around an external binary (`whisper-cli`, `mlx_whisper`, GigaAM
+  Python script).
+
+The publish goals haven't changed:
 
 - **Distribution:** npm (scoped, `@ilyavorobiev/transcribe`) and a public
   GitHub repository under `github.com/ilyavorobiev/transcribe`.
 - **Surface:** CLI binary only (no exported library API). Users run
   `transcribe <file>` and `transcribe setup`.
 - **License:** MIT.
-- **Platforms (v1):** macOS only (Apple Silicon native, Intel falls back to CPU).
-- **Binary/model provisioning:** post-install script attempts a build, and an
-  explicit `transcribe setup` subcommand handles building + model download as
-  a first-class, idempotent command.
+- **Platforms (v1):** macOS only (Apple Silicon native; cpp engine works on
+  Intel too as a side benefit). Linux/Windows deferred.
+- **Provisioning:** users see and consent to the expensive setup step;
+  npm install itself stays fast and side-effect-light.
 
 The exact npm package name and GitHub repo slug are assumed available; if
 `@ilyavorobiev` scope or `transcribe` repo name is taken, the closest variant
@@ -44,16 +63,53 @@ is selected at publish time (no design changes).
 
 ## 4. Current State
 
-- Code: `/Users/ivorobiev/Desktop/repos/transcriber/` — not a git repo.
-- `package.json`: `private: true`, `bin.transcribe` = `./src/cli.ts`.
-- `src/`: `cli.ts`, `audio.ts`, `whisper.ts`, `paths.ts`, plus colocated
-  tests (23 passing).
-- `scripts/setup.sh`: bash; clones whisper.cpp into `vendor/` next to source
-  and downloads the model into `models/` next to source. Hard-codes
-  project-root-relative paths.
-- `scripts/install.sh`: writes a `transcribe` shim to `~/.local/bin/`.
-- `tsconfig.json`: strict, `noUncheckedIndexedAccess`.
-- No LICENSE, no CHANGELOG, no README badges, no CI, no `.github/`.
+The codebase has grown well beyond what this spec originally described.
+Snapshot as of the latest commit (`8def437`):
+
+```
+src/
+  cli.ts                # arg parsing, engine dispatch, resolveEngine/Model
+  audio.ts              # ffmpeg preprocessor (used by cpp + gigaam engines)
+  paths.ts              # WHISPER_BIN / WHISPER_MODEL_DIR / PROJECT_ROOT
+  engines/
+    types.ts            # Format, EngineName ("mlx"|"cpp"|"gigaam"), Engine
+    cpp.ts              # whisper.cpp wrapper + whisperArgv (pure)
+    mlx.ts              # mlx-whisper wrapper + mlxArgv + model aliases
+    gigaam.ts           # GigaAM wrapper (spawns gigaam_transcribe.py via uv)
+    *.test.ts           # 4 colocated engine test files
+  *.test.ts             # cli / audio / paths tests
+scripts/
+  setup-all.sh          # default `bun run setup` orchestrator
+  setup-mlx.sh          # MLX engine only
+  setup-cpp.sh          # whisper.cpp engine only
+  convert-hf-to-mlx.sh  # HF Whisper → MLX format
+  download-hf-model.sh  # generic HF repo downloader via curl
+  gigaam_transcribe.py  # PEP 723 inline-deps Python wrapper for GigaAM
+  install.sh            # symlink transcribe shim into PATH
+specs/
+  cli/spec.md           # implemented — local CLI v0.1
+  publish/spec.md       # this spec
+  mlx-russian/spec.md   # implemented — MLX engine + Russian fine-tune
+  gigaam/spec.md        # implemented — GigaAM engine (opt-in)
+guidelines/             # workflow.md + docs/{spec,prd}.md + roles/
+AGENTS.md + CLAUDE.md   # CLAUDE.md is `@AGENTS.md` (Claude Code @-import)
+package.json            # private: true; bin.transcribe = ./src/cli.ts
+.gitignore              # ignores vendor/, models/, .claude/, PRD*.txt
+tsconfig.json           # strict, noUncheckedIndexedAccess
+```
+
+State of moving parts:
+
+- **Git initialized**, 3 commits on `main` (`23a1242`, `079fa5e`, `8def437`).
+  No remote, no pushes.
+- **`package.json`** still has `private: true`. No `name`/`license`/`author`/
+  `repository`/`bugs`/`homepage`/`keywords`/`files`/`os`/`engines`/`scripts.postinstall` yet.
+- **No LICENSE, CHANGELOG, README badges, CI, `.github/`.**
+- **55 tests pass**, typecheck clean.
+- **End-to-end works on the author's machine**: `bun run setup` (~20 GB,
+  ~15–30 min) → `bun run transcribe foo.m4a` produces a Russian transcript
+  using mlx + antony66 by default.
+- **Not yet validated on a fresh machine** — that's `T29` in the plan.
 
 ## 5. Considered Options
 
@@ -102,63 +158,89 @@ is selected at publish time (no design changes).
 
 ## 6. Proposed Solution
 
-### 6.1. Repo layout (publishable)
+### 6.1. Publishable repo layout
+
+Files currently exist; the publish epic adds the bolded ones. Anything
+under `vendor/`, `models/`, `.claude/`, `PRD*.txt` is gitignored and never
+published.
 
 ```
 transcribe/
-├── src/
-│   ├── cli.ts            # entry — now also routes subcommands
-│   ├── commands/
-│   │   ├── transcribe.ts # current main flow extracted
-│   │   ├── setup.ts      # new — builds whisper.cpp + downloads model
-│   │   └── doctor.ts     # new — diagnoses env (post-v1, optional)
+├── src/                          # ALREADY EXISTS
+│   ├── cli.ts                    #   dispatch + arg parsing
 │   ├── audio.ts
-│   ├── whisper.ts
-│   ├── paths.ts          # extended with cache-dir resolution
-│   ├── log.ts            # tiny styled-stderr helper (no deps)
+│   ├── paths.ts                  #   needs cache-dir extension (T10)
+│   ├── engines/
+│   │   ├── types.ts
+│   │   ├── cpp.ts | mlx.ts | gigaam.ts
+│   │   └── *.test.ts
 │   └── *.test.ts
-├── scripts/
-│   └── postinstall.ts    # replaces setup.sh; TS for testability
-├── .github/
-│   ├── workflows/
-│   │   ├── ci.yml        # typecheck + tests on macos-latest
-│   │   └── release.yml   # publish on tag push
-│   └── ISSUE_TEMPLATE/
-│       ├── bug.md
-│       └── feature.md
-├── LICENSE               # MIT
-├── README.md             # badges, install, usage, troubleshooting
-├── CHANGELOG.md          # Keep-a-Changelog
-├── CONTRIBUTING.md       # how to run tests, propose changes, cut releases
-├── package.json
+├── scripts/                      # ALREADY EXISTS
+│   ├── setup-all.sh              #   orchestrator — called by `transcribe setup`
+│   ├── setup-mlx.sh | setup-cpp.sh
+│   ├── convert-hf-to-mlx.sh
+│   ├── download-hf-model.sh
+│   ├── gigaam_transcribe.py
+│   ├── install.sh
+│   └── **postinstall.ts**        #   T11 — NEW: best-effort, never fails install
+├── .github/                      # **T6, T18, T19 — NEW**
+│   ├── workflows/{ci,release}.yml
+│   └── ISSUE_TEMPLATE/{bug,feature}.md
+├── specs/                        # ALREADY EXISTS
+├── guidelines/                   # ALREADY EXISTS
+├── AGENTS.md + CLAUDE.md         # ALREADY EXISTS
+├── **LICENSE**                   # T1 — NEW (MIT)
+├── **README.md**                 # T17 — NEEDS REWRITE (currently a stub)
+├── **CHANGELOG.md**              # T2 — NEW
+├── **CONTRIBUTING.md**           # T3 — NEW
+├── package.json                  #   T4 — needs publish-fields rewrite
 ├── tsconfig.json
-├── .gitignore
-└── .npmignore            # belt-and-suspenders with package.json `files`
+├── .gitignore                    # ALREADY EXISTS
+└── **.npmignore**                # T5 — NEW (belt-and-suspenders)
 ```
 
-### 6.2. `package.json` changes
+### 6.2. `package.json` publish-ready
+
+Current `package.json` is for local dev (`private: true`, minimal fields).
+The publish version needs:
 
 ```jsonc
 {
   "name": "@ilyavorobiev/transcribe",
   "version": "0.1.0",
-  "description": "Offline transcription of iPhone voice memos via whisper.cpp",
+  "description": "Offline transcription of iPhone voice memos on macOS — 3 engines (mlx/cpp/gigaam) optimized for Russian",
   "license": "MIT",
   "author": "Ilya Vorobiev",
   "homepage": "https://github.com/ilyavorobiev/transcribe",
   "repository": { "type": "git", "url": "git+https://github.com/ilyavorobiev/transcribe.git" },
   "bugs": { "url": "https://github.com/ilyavorobiev/transcribe/issues" },
-  "keywords": ["whisper", "whisper.cpp", "transcribe", "speech-to-text", "russian", "m4a", "voice-memo", "macos", "cli", "offline"],
+  "keywords": [
+    "whisper", "whisper.cpp", "mlx-whisper", "gigaam",
+    "transcribe", "speech-to-text", "stt", "asr",
+    "russian", "m4a", "voice-memo",
+    "macos", "apple-silicon", "metal", "cli", "offline"
+  ],
   "type": "module",
   "engines": { "bun": ">=1.1.0" },
   "os": ["darwin"],
   "bin": { "transcribe": "./src/cli.ts" },
-  "files": ["src", "scripts/postinstall.ts", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": [
+    "src",
+    "scripts/setup-all.sh",
+    "scripts/setup-mlx.sh",
+    "scripts/setup-cpp.sh",
+    "scripts/convert-hf-to-mlx.sh",
+    "scripts/download-hf-model.sh",
+    "scripts/gigaam_transcribe.py",
+    "scripts/postinstall.ts",
+    "README.md", "LICENSE", "CHANGELOG.md"
+  ],
   "scripts": {
     "postinstall": "bun run scripts/postinstall.ts || true",
-    "test": "bun test",
+    "test": "bun test src",
     "typecheck": "bunx tsc --noEmit",
-    "transcribe": "bun run src/cli.ts"
+    "transcribe": "bun run src/cli.ts",
+    "setup": "bash scripts/setup-all.sh"
   }
 }
 ```
@@ -167,97 +249,91 @@ Notes:
 
 - `private: true` removed.
 - `os: ["darwin"]` — npm refuses to install on Linux/Windows with a clear
-  error, matching v1 scope.
-- `engines.bun` — runtime is Bun (the published `bin` is `.ts`).
-- `postinstall` is wrapped with `|| true` as a safety net so install never
-  fails even if the script crashes.
-- `files` allowlist publishes only what's needed. No `vendor/`, no `models/`,
-  no `*.test.ts`, no `tsconfig.json`.
+  error.
+- `bin.transcribe` runs the TS file via Bun's `#!/usr/bin/env bun` shebang
+  (already in `src/cli.ts`).
+- `files` allowlist must include every script `transcribe setup` will call
+  at runtime. No `vendor/`, no `models/`, no tests, no specs/guidelines
+  (those are dev-only).
+- `postinstall` wrapped with `|| true` so install never fails.
+- `scripts.test` scoped to `src` (avoids the broken whisper.cpp Node-addon
+  test that lives in `vendor/`).
 
-### 6.3. CLI subcommand routing (`src/cli.ts`)
+### 6.3. Subcommand routing (NEW — not yet implemented)
 
-`transcribe`'s first positional argument is now either a known subcommand
-or a file path. Known subcommands: `setup`, `doctor` (post-v1), `help`.
-Special flags: `--version`, `-V`, `--help`, `-h`.
+For the published binary to be usable globally (`transcribe foo.m4a` from
+any folder; `transcribe setup` to install models), we need `transcribe`
+to dispatch a `setup` subcommand. Today, setup runs as `bun run setup`
+(works only inside the source repo).
+
+Target shape:
 
 ```
-transcribe <file.m4a> [options]      # transcribe
-transcribe setup [--model <name>]    # one-time install (build + model)
+transcribe <file.m4a> [options]      # transcribe (current default behavior)
+transcribe setup [--no-cpp|--no-mlx|--no-gigaam|--no-bond005]   # one-time install
+transcribe setup:mlx | setup:cpp     # single-engine installs
 transcribe --version                 # prints package version
-transcribe --help                    # combined help
+transcribe --help                    # combined help (transcribe + setup)
 ```
 
-The existing `transcribe` flow moves into `src/commands/transcribe.ts` with
-no behavior change. `src/cli.ts` becomes a thin dispatcher.
+Implementation: in `src/cli.ts`, before the existing arg parser, check if
+the first positional matches a known subcommand (`setup`, `setup:mlx`,
+`setup:cpp`). If yes, exec the corresponding `scripts/setup-*.sh` with the
+remaining args. Otherwise, fall through to the existing transcribe flow.
 
-### 6.4. `transcribe setup` (`src/commands/setup.ts`)
+Tracked as task **T8** in §8.5.
 
-Idempotent, network-touching, can run multiple times safely.
+### 6.4. `transcribe setup` implementation
 
-Behavior:
+Already exists as `scripts/setup-all.sh` (Bash). Documented at length in
+`specs/mlx-russian/spec.md` and `specs/gigaam/spec.md` Field findings. The
+publish work is **wiring it as a subcommand** (T8) and **changing where
+artifacts land** (T10, cache directory) — not rewriting setup.
 
-1. Verify macOS; refuse politely otherwise.
-2. Ensure `git`, `cmake`, `ffmpeg` are present. If missing, print exactly
-   the `brew install …` command needed and exit 1.
-3. Resolve the cache directory (see §6.6). Create `vendor/` + `models/`.
-4. Clone or `git pull --ff-only` whisper.cpp into `<cache>/vendor/whisper.cpp`.
-5. `cmake -B build -DGGML_METAL=ON` on Apple Silicon, plain config on Intel.
-   Build `whisper-cli`. Skip if `whisper-cli` exists and `git rev-parse HEAD`
-   hasn't changed since the last successful build (tracked in
-   `<cache>/.build-state.json`).
-6. Resolve target model from `--model` (default: `large-v3`).
-7. If `<cache>/models/ggml-<model>.bin` exists and its size matches the
-   expected size (HEAD-checked against the HuggingFace URL), skip download.
-8. Otherwise download from
-   `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-<model>.bin`
-   directly via `Bun.fetch` (handles the S3 redirect natively — this is the
-   bug that broke the upstream `download-ggml-model.sh` in the existing repo).
-9. Verify final file size matches `Content-Length`. Refuse to leave a partial
-   file in place — write to `*.partial` and rename on success.
-10. Print summary with absolute paths.
-
-Flags:
-
-```
-transcribe setup [options]
-  --model <name>     model to download (default: large-v3)
-  --no-build         skip whisper.cpp clone+build, only download model
-  --no-model         skip model download, only build whisper.cpp
-  --force            rebuild and re-download even if up to date
-  --cache-dir <p>    override cache directory
-```
+The cache-dir change (T10) is necessary: when installed globally as
+`@ilyavorobiev/transcribe`, the package lives somewhere like
+`~/.bun/install/global/node_modules/@ilyavorobiev/transcribe/`. Models in
+`<that>/models/` would be wiped on `bun update -g`. We need them under a
+user cache dir instead. See §6.6.
 
 ### 6.5. `scripts/postinstall.ts`
 
-Runs during `bun install`. Must be **fast** and **safe**.
+Runs during `bun install`. Must be **fast** and **safe**. With ~20 GB of
+real install work, we are MORE conservative than the original spec assumed:
 
 - Skip if any of: `CI=true`, `TRANSCRIBE_SKIP_POSTINSTALL=1`,
   `process.platform !== "darwin"`, `npm_config_production` truthy.
-- Print a concise banner with the next step (`transcribe setup`).
-- Best-effort: if `git`, `cmake`, `ffmpeg` are all on PATH, invoke the same
-  build logic as `transcribe setup --no-model`. Failures print a warning
-  and exit 0 (never fail install).
-- **Never** download the model from postinstall (multi-GB download during
-  `npm install` is hostile).
+- Print one banner with the next step: `transcribe setup`.
+- **No build, no download, no Python install.** Doing any of those during
+  npm install would be hostile (multi-minute hangs, multi-GB downloads).
+  Setup is an explicit user step.
+- Always exit 0.
 
-### 6.6. Cache directory (`src/paths.ts` extended)
+This is a stricter version of what the original spec proposed (which had
+postinstall attempting a whisper.cpp build). Real-world test: `bun add -g`
+should complete in seconds.
+
+### 6.6. Cache directory (`src/paths.ts` extension — T10)
+
+**The single most important unimplemented item.** Without it, models live
+inside the package directory and get wiped on every `bun update -g`.
 
 Resolution order:
 
-1. `WHISPER_BIN` env var (existing).
-2. `TRANSCRIBE_CACHE_DIR` env var.
+1. `WHISPER_BIN` env var — single binary override (already supported).
+2. `TRANSCRIBE_CACHE_DIR` env var — root for everything.
 3. `$XDG_CACHE_HOME/transcribe` if set.
 4. `~/Library/Caches/transcribe` on macOS (default).
-5. Legacy `{package-root}/vendor` and `{package-root}/models` — kept for
-   local dev only (when running from the source repo).
+5. Legacy `{PROJECT_ROOT}/{vendor,models}` — for local dev, when running
+   from the source repo (detected by presence of `.git` or `specs/`).
 
-Same scheme for `WHISPER_MODEL_DIR` → `TRANSCRIBE_MODELS_DIR` →
-`<cache>/models/`.
+Each engine's path resolver (`src/engines/{cpp,mlx,gigaam}.ts`) consults
+this in priority order. Aliases like `antony66-russian` resolve to
+`<cache>/models/antony66-russian-mlx/`. `transcribe setup` writes there.
 
-This is the single most important change: when installed globally, the
-package lives in a Bun-managed directory that `bun update` will rewrite —
-keeping the multi-GB model out of there protects users from accidentally
-re-downloading on every package upgrade.
+Migration for the author: copy existing `models/`, `vendor/` from the
+repo to `~/Library/Caches/transcribe/` once. Or symlink. Documented in
+CONTRIBUTING.md.
 
 ### 6.7. CI (`.github/workflows/ci.yml`)
 
@@ -265,18 +341,19 @@ re-downloading on every package upgrade.
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: macos-latest   # currently Apple Silicon
+    runs-on: macos-latest   # Apple Silicon
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
         env: { TRANSCRIBE_SKIP_POSTINSTALL: "1" }
       - run: bun run typecheck
-      - run: bun test
+      - run: bun run test
 ```
 
-Tests are pure — no whisper.cpp build or model download in CI. Postinstall
-is skipped via the env var the script itself respects.
+Tests are pure — no whisper.cpp build, no MLX install, no model download
+in CI. Postinstall skipped via the env var the script itself respects.
+Locked-in Bun version via `setup-bun`.
 
 ### 6.8. Release (`.github/workflows/release.yml`)
 
@@ -293,7 +370,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
         env: { TRANSCRIBE_SKIP_POSTINSTALL: "1" }
-      - run: bun run typecheck && bun test
+      - run: bun run typecheck && bun run test
       - run: bun publish --access public
         env: { NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }} }
 ```
@@ -301,73 +378,115 @@ jobs:
 Release flow: bump `version` in `package.json`, update `CHANGELOG.md`, commit,
 `git tag v0.1.0 && git push --tags`. CI does the publish.
 
-### 6.9. README.md content (replace existing)
+### 6.9. README.md content (replace existing — currently a stub)
 
-- npm install badge (`npm version`), MIT badge, CI status badge.
-- 30-second quickstart: `bun add -g @ilyavorobiev/transcribe && transcribe setup && transcribe memo.m4a`.
-- Supported platforms: macOS Apple Silicon (Metal) and Intel (CPU).
-- Model trade-off table (kept from current README).
-- Environment variables: `WHISPER_BIN`, `TRANSCRIBE_CACHE_DIR`,
+The published README needs (T17):
+
+- **Badges**: npm version, MIT license, CI status, "macOS only" platform.
+- **30-second quickstart**:
+  ```sh
+  bun add -g @ilyavorobiev/transcribe
+  transcribe setup          # ~15-30 min, ~20 GB; one-time
+  transcribe memo.m4a       # produces memo.txt next to memo.m4a
+  ```
+- **Three engines, when to use which** (mirror the table from AGENTS.md):
+  mlx default (multilingual, Russian-default = antony66), cpp (offline-strict),
+  gigaam (opt-in 2nd-opinion for Russian).
+- **Supported platforms**: macOS Apple Silicon (preferred) and Intel
+  (cpp engine works, mlx/gigaam require Apple Silicon for performance).
+- **Disk footprint**: ~20 GB for full setup; flags to reduce
+  (`--no-cpp`, `--no-bond005`, `--no-gigaam`, `--no-mlx`).
+- **Environment variables**: `WHISPER_BIN`, `TRANSCRIBE_CACHE_DIR`,
   `TRANSCRIBE_SKIP_POSTINSTALL`.
-- Troubleshooting (existing entries plus: "first run after upgrade redownloads
-  whisper.cpp — this is expected, model stays cached").
-- Credit upstream: whisper.cpp by Georgi Gerganov, Whisper by OpenAI.
+- **Troubleshooting**: HF download stalls (use `setup` not auto-download),
+  transformers ≥4.50 + GigaAM, "Too long wav file" (use `transcribe`
+  not the model's own `transcribe` method).
+- **Credit upstream**: whisper.cpp (Georgi Gerganov), Whisper (OpenAI),
+  mlx-whisper (Apple ML Explore), GigaAM (Sber), antony66 + bond005
+  (HuggingFace community).
 
 ### 6.10. CHANGELOG.md (Keep-a-Changelog)
 
 ```
-## [0.1.0] - 2026-05-17
+## [0.1.0] - <release-date>
 ### Added
 - Initial public release.
-- CLI: `transcribe <file>` and `transcribe setup`.
-- macOS (Apple Silicon + Intel) support via whisper.cpp.
-- Russian, English, and 97 other languages via Whisper large-v3.
+- CLI: `transcribe <file>` and `transcribe setup [--no-cpp|--no-mlx|...]`.
+- macOS support (Apple Silicon native via Metal; Intel works via cpp engine).
+- Three transcription engines:
+  - mlx (default): mlx-whisper + antony66/whisper-large-v3-russian for ru,
+    stock multilingual large-v3 for other languages. ~99 languages.
+  - cpp: whisper.cpp built from source with Metal + tuned anti-hallucination
+    flags + Silero VAD. Offline-strict, no Python.
+  - gigaam (opt-in): Sber GigaAM-v3 RNN-T for Russian-only, native Latin
+    output for tech acronyms.
+- Russian-specific quality work: antony66 + bond005 fine-tunes converted
+  to MLX format on first setup.
+- Domain-vocabulary biasing via `--prompt` (mlx/cpp).
 ```
 
 ### 6.11. Pros and Cons
 
 - **Pros:**
   - Conventional npm package shape — discoverable, installable, auditable.
-  - Cache-dir model storage means upgrades are cheap.
-  - Source-built binary keeps trust simple.
+  - Cache-dir model storage means `bun update -g` is cheap.
+  - All binaries source-built or curl-downloaded on the user's machine —
+    no opaque blobs shipped by us.
   - CI gates every release.
+  - Three engines means one of them will work for most users (offline-strict
+    → cpp; quality-first Russian → mlx; experimental → gigaam).
 - **Cons:**
-  - Postinstall remains controversial in some communities; mitigated but
-    not eliminated.
-  - First-run setup still 5–10 minutes (~3 GB model + build) — fundamental
-    to whisper.cpp, can't be avoided without bundling.
+  - First-run setup is now ~15–30 min and ~20 GB (3 engines + 4 model
+    families + 3 GB of Python wheels). Inherent to the design choices in
+    `mlx-russian/` and `gigaam/` specs, not fixable here.
+  - Three engines = three things that can break with upstream version drift
+    (transformers, mlx-whisper, whisper.cpp). The `--no-*` flags in setup
+    mitigate by letting users opt out of the engines they don't need.
   - Bun-only runtime is a barrier for Node users.
+  - Python (via uv) is a runtime dependency now, even though we isolate it.
 - **Consequences:**
   - You become the maintainer of an npm package — issues, dependabot,
-    occasional whisper.cpp compat work.
+    occasional whisper.cpp / mlx-whisper / transformers compat work.
   - npm 2FA strongly recommended for the publishing account.
+  - The CHANGELOG should call out engine version pins (we're pinned to
+    `transformers<4.50` for gigaam — a future loosening is a real release
+    note).
   - Public repo means the design and code are now subject to public scrutiny.
 
 ## 7. Testing Strategy
 
-Test scope grows by exactly two things: subcommand routing, and the new
-`setup`/`postinstall` decision logic. No tests exercise the actual build or
-model download (too slow, too network-dependent).
+Current state: **55 tests pass** across 6 files (cli, audio, paths, and
+three engine wrappers). Pure argv construction + alias resolution + flag
+parsing. None require an installed engine binary or model file.
 
-### 7.1. Unit Tests
+The publish work adds 3 new test surfaces (subcommand routing,
+postinstall skip logic, cache-dir resolution). No tests exercise actual
+builds or model downloads (too slow, too network-dependent).
 
-- `cli.ts` routing: `transcribe foo.m4a`, `transcribe setup`,
-  `transcribe --help`, `transcribe --version` each dispatch to the correct
-  handler.
-- `setup.ts` argv parsing: `--model`, `--no-build`, `--no-model`, `--force`,
-  `--cache-dir` parse correctly and conflicts (`--no-build --no-model`) are
-  rejected.
-- `paths.ts` cache-dir resolution: covers `TRANSCRIBE_CACHE_DIR`,
-  `XDG_CACHE_HOME`, and the macOS default.
-- `postinstall.ts` skip logic: returns "skip" reason given CI=true,
-  `TRANSCRIBE_SKIP_POSTINSTALL=1`, non-darwin platform, or missing build deps.
+### 7.1. Unit Tests (additions for the publish epic)
 
-### 7.2. Integration Tests
+- `cli.ts` subcommand routing: `transcribe foo.m4a` → transcribe handler,
+  `transcribe setup` / `transcribe setup:mlx` / `transcribe setup:cpp` →
+  spawn the matching `scripts/setup-*.sh`, `transcribe --version` →
+  prints `package.json` version, `transcribe --help` → combined help.
+- `paths.ts` cache-dir resolution: honors `TRANSCRIBE_CACHE_DIR`,
+  `XDG_CACHE_HOME`, the macOS default, and the legacy local-dev fallback.
+- `postinstall.ts` skip logic: returns "skip" reason given any of
+  `CI=true`, `TRANSCRIBE_SKIP_POSTINSTALL=1`, non-darwin platform.
 
-- `npm pack` produces a tarball; running `bun add ./tarball` in a tmp dir
-  installs cleanly with `TRANSCRIBE_SKIP_POSTINSTALL=1`. The `transcribe`
-  binary is on PATH and `transcribe --help` exits 0. (Manual, documented in
-  CONTRIBUTING.md release checklist; not automated in CI for v1.)
+Existing 55 tests stay green throughout.
+
+### 7.2. Integration Tests (manual, in CONTRIBUTING.md release checklist)
+
+- `bun publish --dry-run --access public` shows file list matches `files`
+  allowlist (no `vendor/`, no `models/`, no `*.test.ts`, no `specs/`).
+- `npm pack` produces a tarball; `bun add ./tarball` in a tmp dir installs
+  cleanly with `TRANSCRIBE_SKIP_POSTINSTALL=1`. The `transcribe` binary is
+  on PATH and `transcribe --help` exits 0.
+- **Fresh-Mac install test** (T29 in §8.5): on a Mac that has never run
+  `bun run setup` from this repo, `bun add -g @ilyavorobiev/transcribe &&
+  transcribe setup && transcribe sample-ru.m4a` produces a Russian
+  transcript. This is the real ship gate.
 
 ## 8. Definition of Done
 
@@ -380,118 +499,145 @@ model download (too slow, too network-dependent).
 
 ### Feature-Specific
 
-- [ ] `LICENSE` file present (MIT, © 2026 Ilya Vorobiev).
-- [ ] `CHANGELOG.md` present with `0.1.0` entry.
-- [ ] `package.json` updated: `name`, `version`, `description`, `license`,
-      `author`, `homepage`, `repository`, `bugs`, `keywords`, `files`,
-      `os`, `engines.bun`, `bin`, `scripts.postinstall`. `private` removed.
-- [ ] `src/cli.ts` dispatches `setup` subcommand and `--version` flag.
-- [ ] `src/commands/setup.ts` implemented and idempotent.
-- [ ] `scripts/postinstall.ts` implemented; honors
-      `TRANSCRIBE_SKIP_POSTINSTALL=1` and `CI=true`; never fails install.
-- [ ] `src/paths.ts` resolves to `~/Library/Caches/transcribe/` by default;
-      env overrides honored.
-- [ ] `README.md` rewritten with badges, quickstart, env vars, troubleshooting.
-- [ ] `CONTRIBUTING.md` documents test commands and release procedure.
-- [ ] `.github/workflows/ci.yml` runs typecheck + tests on macos-latest.
-- [ ] `.github/workflows/release.yml` publishes on `v*.*.*` tags.
-- [ ] `git init && git remote add origin git@github.com:ilyavorobiev/transcribe.git`.
-- [ ] Public GitHub repository created and initial commit pushed.
-- [ ] `NPM_TOKEN` secret added to the GitHub repository.
-- [ ] `bun publish --dry-run --access public` shows the expected file list.
-- [ ] Initial `v0.1.0` tag pushed; release workflow publishes successfully.
-- [ ] `bun add -g @ilyavorobiev/transcribe` in a clean shell installs the
-      package and `transcribe --help` works.
+Done items checked. Remaining items unchecked.
+
+- [x] `git init` and initial commit (`23a1242`, then `079fa5e`, `8def437`).
+- [ ] `LICENSE` file present (MIT, © 2026 Ilya Vorobiev). **T1**
+- [ ] `CHANGELOG.md` with `0.1.0` entry per §6.10. **T2**
+- [ ] `CONTRIBUTING.md` documents test commands, release procedure, and
+      the engine-version-pin policy. **T3**
+- [ ] `package.json` updated per §6.2: `name`, `version`, `description`,
+      `license`, `author`, `homepage`, `repository`, `bugs`, `keywords`,
+      `files`, `os`, `engines.bun`, `bin`, `scripts.postinstall`.
+      `private` removed. **T4**
+- [ ] `.npmignore` belt-and-suspenders alongside `files` allowlist. **T5**
+- [ ] `.github/ISSUE_TEMPLATE/{bug,feature}.md`. **T6**
+- [ ] `src/cli.ts` dispatches `setup` / `setup:mlx` / `setup:cpp`
+      subcommands and `--version` / `--help` flags. **T8**
+- [ ] `scripts/postinstall.ts` implemented per §6.5; honors
+      `TRANSCRIBE_SKIP_POSTINSTALL=1` and `CI=true`; never fails install,
+      never builds, never downloads. **T11**
+- [ ] `src/paths.ts` resolves model + binary paths to
+      `~/Library/Caches/transcribe/` by default per §6.6; env overrides
+      honored; legacy local-dev path still works when running from the
+      source repo. **T10**
+- [ ] `setup-all.sh` writes artifacts into the cache dir, not `<repo>/models`.
+      Idempotent across cache-dir-vs-local-dev environments. **T10b**
+- [ ] `README.md` rewritten per §6.9 (badges, quickstart, three engines,
+      env vars, troubleshooting). **T17**
+- [ ] `.github/workflows/ci.yml` runs typecheck + tests on macos-latest. **T18**
+- [ ] `.github/workflows/release.yml` publishes on `v*.*.*` tags. **T19**
+- [ ] Public GitHub repository created at
+      `github.com/ilyavorobiev/transcribe` and pushed. **T21, T22**
+- [ ] `NPM_TOKEN` secret added to the GitHub repository. **T24, T25**
+- [ ] `bun publish --dry-run --access public` shows the expected file list. **T26**
+- [ ] Initial `v0.1.0` tag pushed; release workflow publishes successfully. **T27**
+- [ ] **Fresh-Mac smoke test**: clean shell on a Mac that has never run
+      this repo's setup. `bun add -g @ilyavorobiev/transcribe &&
+      transcribe setup && transcribe sample-ru.m4a` produces a Russian
+      transcript. **T29** — this is the real ship gate.
 
 ## 8.5. Execution Plan
 
-Turns §6 (Proposed Solution) into a sequenced task graph. Each task is small
-enough to land in one PR; estimates are calendar time for one focused person.
+Many tasks from the original plan landed during the engine-architecture
+work (`mlx-russian/`, `gigaam/` specs). The table below marks what's done,
+what changed, and what's still needed for v0.1.0 publish.
 
 ### Tasks
 
-| ID  | Task                                                                                                                                                                | Deps          | Est.    |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ------- |
-| T1  | Add `LICENSE` (MIT, © 2026 Ilya Vorobiev)                                                                                                                           | —             | 5 min   |
-| T2  | Add `CHANGELOG.md` with `0.1.0` placeholder                                                                                                                          | —             | 5 min   |
-| T3  | Add `CONTRIBUTING.md` (test + release procedure)                                                                                                                     | —             | 15 min  |
-| T4  | Update `package.json` (name, version, description, license, author, homepage, repository, bugs, keywords, `files`, `os`, `engines`, `bin`, `scripts.postinstall`; remove `private`) | —             | 20 min  |
-| T5  | Add `.npmignore`                                                                                                                                                    | —             | 5 min   |
-| T6  | Add `.github/ISSUE_TEMPLATE/{bug,feature}.md`                                                                                                                        | —             | 15 min  |
-| T7  | Extract current main flow → `src/commands/transcribe.ts`                                                                                                            | —             | 20 min  |
-| T8  | Add subcommand routing + `--version` / `--help` in `src/cli.ts`                                                                                                     | T7            | 30 min  |
-| T9  | Implement `src/commands/setup.ts` — idempotent build + model download via direct `Bun.fetch` (fixes the HuggingFace S3-redirect bug that broke our first attempt)   | T7            | 2 h     |
-| T10 | Extend `src/paths.ts` with cache-dir resolution (`~/Library/Caches/transcribe/`, `TRANSCRIBE_CACHE_DIR`, `XDG_CACHE_HOME`)                                          | —             | 30 min  |
-| T11 | Implement `scripts/postinstall.ts` — skip logic (`CI`, `TRANSCRIBE_SKIP_POSTINSTALL`, non-darwin), best-effort build, never fails install                            | T9, T10       | 45 min  |
-| T12 | Delete `scripts/setup.sh` and `scripts/install.sh` (superseded by T9 and T11)                                                                                       | T11           | 5 min   |
-| T13 | Tests: CLI subcommand routing dispatch                                                                                                                              | T8            | 20 min  |
-| T14 | Tests: `setup` arg parsing                                                                                                                                          | T9            | 20 min  |
-| T15 | Tests: cache-dir resolution                                                                                                                                         | T10           | 20 min  |
-| T16 | Tests: postinstall skip logic                                                                                                                                       | T11           | 20 min  |
-| T17 | Rewrite `README.md` (badges, quickstart, env vars, troubleshooting, model trade-offs)                                                                               | T4, T8        | 45 min  |
-| T18 | `.github/workflows/ci.yml` (typecheck + tests on `macos-latest`, postinstall skipped)                                                                               | T4            | 20 min  |
-| T19 | `.github/workflows/release.yml` (publish on `v*.*.*` tag)                                                                                                           | T4            | 20 min  |
-| T20 | `git init`, first commit                                                                                                                                            | T1–T19        | 5 min   |
-| T21 | **External**: create public GitHub repo `github.com/ilyavorobiev/transcribe`                                                                                        | —             | 5 min   |
-| T22 | `git remote add origin … && git push -u origin main`                                                                                                                | T20, T21      | 5 min   |
-| T23 | Verify CI workflow green on initial push                                                                                                                            | T18, T22      | 5 min   |
-| T24 | **External**: register npm scope `@ilyavorobiev` on npmjs.com                                                                                                       | —             | 5 min   |
-| T25 | **External**: generate npm token, add as `NPM_TOKEN` secret in GitHub repo                                                                                          | T21, T24      | 5 min   |
-| T26 | `bun publish --dry-run --access public` — verify file list matches `files` allowlist                                                                                | T4, T5        | 5 min   |
-| T27 | Tag `v0.1.0`, push — triggers `release.yml`                                                                                                                         | T23, T25, T26 | 5 min   |
-| T28 | Verify package live on npmjs.com                                                                                                                                    | T27           | 2 min   |
-| T29 | Verify `bun add -g @ilyavorobiev/transcribe && transcribe --help` in a clean shell                                                                                  | T28           | 5 min   |
+| ID  | Task                                                                                                                       | Status | Deps          | Est.    |
+| --- | -------------------------------------------------------------------------------------------------------------------------- | ------ | ------------- | ------- |
+| T1  | Add `LICENSE` (MIT, © 2026 Ilya Vorobiev)                                                                                  | TODO   | —             | 5 min   |
+| T2  | Add `CHANGELOG.md` with `0.1.0` entry (§6.10)                                                                              | TODO   | —             | 5 min   |
+| T3  | Add `CONTRIBUTING.md` (tests, release procedure, engine version-pin policy)                                                | TODO   | —             | 20 min  |
+| T4  | Update `package.json` per §6.2 (name, version, description, license, author, homepage, repository, bugs, keywords, `files`, `os`, `engines`, `bin`, `scripts.postinstall`; remove `private`) | TODO | —             | 30 min  |
+| T5  | Add `.npmignore`                                                                                                           | TODO   | —             | 5 min   |
+| T6  | Add `.github/ISSUE_TEMPLATE/{bug,feature}.md`                                                                              | TODO   | —             | 15 min  |
+| T7  | Engine extraction — formerly "extract main flow to commands/transcribe.ts"                                                 | DONE   | —             | —       |
+|     | → Done in a different shape: `src/engines/{cpp,mlx,gigaam}.ts` + `types.ts`. Each engine exposes a pure argv builder + `Engine` instance. `cli.ts` dispatches via `ENGINE_MAP`. |        |               |         |
+| T8  | Subcommand routing in `src/cli.ts` — `transcribe setup` / `setup:mlx` / `setup:cpp`, plus `--version`                       | TODO   | T7            | 45 min  |
+|     | (Without this, `bun add -g …` ships a binary that can transcribe but can't install its own engines.)                       |        |               |         |
+| T9  | "Implement `commands/setup.ts`" — formerly Bun.fetch model download                                                        | DONE   | —             | —       |
+|     | → Done in a different shape: `scripts/setup-all.sh` + 4 helper scripts. Curl-based downloads (HF S3-redirect bug avoided). Documented in `mlx-russian/` and `gigaam/` specs. |        |               |         |
+| T10 | Extend `src/paths.ts` + each engine to use `~/Library/Caches/transcribe/` cache-dir (§6.6). Honor `TRANSCRIBE_CACHE_DIR`, `XDG_CACHE_HOME`. Legacy local-dev fallback. | TODO | —             | 1.5 h   |
+| T10b | Update `scripts/setup-all.sh` (+ helpers) to write artifacts into the cache dir, not `<repo>/models`. Backwards-compat: if `<repo>/models/...` already exists (author's machine), prefer it. | TODO | T10          | 30 min  |
+| T11 | Implement `scripts/postinstall.ts` per §6.5 — skip-only behavior, prints next-step banner, never builds, never downloads, never fails install | TODO | T8          | 30 min  |
+| T12 | (Originally: delete superseded scripts) — N/A; current scripts stay                                                        | DROPPED| —             | —       |
+| T13 | Tests: CLI subcommand routing                                                                                              | TODO   | T8            | 20 min  |
+| T14 | (Originally: setup arg parsing tests) — N/A; setup is bash, exercised by smoke tests, not unit tests                       | DROPPED| —             | —       |
+| T15 | Tests: cache-dir resolution                                                                                                | TODO   | T10           | 20 min  |
+| T16 | Tests: postinstall skip logic                                                                                              | TODO   | T11           | 20 min  |
+| T17 | Rewrite `README.md` per §6.9 (currently a stub — three engines, quickstart, env vars, troubleshooting)                     | TODO   | T4, T8        | 1.5 h   |
+| T18 | `.github/workflows/ci.yml` per §6.7                                                                                        | TODO   | T4            | 20 min  |
+| T19 | `.github/workflows/release.yml` per §6.8                                                                                   | TODO   | T4            | 20 min  |
+| T20 | `git init`, first commit                                                                                                   | DONE   | —             | —       |
+|     | → Done: `23a1242`, `079fa5e`, `8def437` on `main`.                                                                         |        |               |         |
+| T21 | **External**: create public GitHub repo `github.com/ilyavorobiev/transcribe`                                               | TODO   | —             | 5 min   |
+| T22 | `git remote add origin … && git push -u origin main`                                                                       | TODO   | T1–T19, T20, T21 | 5 min |
+| T23 | Verify CI workflow green on first push                                                                                     | TODO   | T18, T22      | 5 min   |
+| T24 | **External**: register npm scope `@ilyavorobiev` on npmjs.com                                                              | TODO   | —             | 5 min   |
+| T25 | **External**: generate npm token, add `NPM_TOKEN` secret in GitHub repo                                                    | TODO   | T21, T24      | 5 min   |
+| T26 | `bun publish --dry-run --access public` — verify file list                                                                 | TODO   | T4, T5        | 5 min   |
+| T27 | Tag `v0.1.0`, push — triggers `release.yml`                                                                                | TODO   | T23, T25, T26 | 5 min   |
+| T28 | Verify package live on npmjs.com                                                                                           | TODO   | T27           | 2 min   |
+| T29 | **Fresh-Mac install**: `bun add -g … && transcribe setup && transcribe sample-ru.m4a` produces a Russian transcript        | TODO   | T28           | 30 min  |
 
-### Critical path
+### Done so far (counts toward critical path)
 
-The longest dependency chain — minimum wall-clock time to ship:
+✓ Engine architecture (T7 in spirit) — three engines behind `Engine` interface.
+✓ Setup workflow (T9 in spirit) — `setup-all.sh` orchestrator.
+✓ Local git history (T20) — three commits on `main`.
+✓ 55 unit tests in place — enough that T13/T15/T16 are quick additions, not greenfield.
+
+### Remaining critical path
 
 ```
-T7 → T9 → T11 → T16 → T20 → T22 → T23 → T27 → T28 → T29
+T8 (subcommand routing) → T11 (postinstall) → T10 (cache dir)
+                                                  ↓
+T17 (README) ← T4 (package.json)               T22 (push) → T23 (CI green)
+                                                  ↓
+                                          T26 (publish dry-run) → T27 (tag/release)
+                                                  ↓
+                                                T28 → T29 (fresh-Mac smoke)
 ```
 
-≈ **4 hours of focused work** plus CI wait (~5 min) plus external steps
-(GitHub repo + npm scope + token; ~15 min total if done in parallel).
+**T8 + T10 + T10b are the load-bearing items.** Together they answer the
+user's "will I have a simple command from any folder?" question:
+- T8 makes `transcribe setup` work after global install.
+- T10/T10b put models in `~/Library/Caches/`, surviving `bun update -g`.
 
-**T9** (the `setup.ts` rewrite with the HuggingFace download fix) is the
-single longest task and the load-bearing item — most downstream work waits
-on it. Land it early.
+### Estimated remaining effort
 
-### Parallelizable work (off the critical path)
+| Phase                            | Estimate  |
+| -------------------------------- | --------- |
+| Hygiene burst (T1, T2, T3, T5, T6) | ~50 min |
+| Subcommand routing + cache (T8, T10, T10b) | ~3 h |
+| Postinstall (T11)                | ~30 min   |
+| Tests for the above (T13, T15, T16) | ~1 h   |
+| README rewrite (T17)             | ~1.5 h    |
+| package.json + .npmignore (T4, T5) | ~35 min |
+| CI + release workflows (T18, T19) | ~40 min  |
+| External setup (T21, T24, T25)   | ~15 min (parallel) |
+| Push + verify + publish (T22, T23, T26, T27, T28) | ~25 min + CI |
+| Fresh-Mac smoke (T29)            | ~30 min (needs a clean Mac or VM) |
 
-Can happen any time before T20 and don't block each other:
-
-- **Hygiene burst** (~45 min total): T1, T2, T3, T5, T6.
-- **CI workflows** (~40 min): T18 and T19 — only depend on T4.
-- **Tests** (~80 min): T13, T14, T15 are independent siblings of T16 and
-  can be written alongside their corresponding implementation.
-- **README** (~45 min): T17 — needs T8 (final subcommand shape).
-- **External setup**: T21, T24, T25 — start on day 1 so they're ready by T27.
-
-### Recommended sequence
-
-Keeps visible progress and the critical path moving:
-
-1. **Hygiene burst** (45 min): T1, T2, T3, T5, T6 — easy wins, makes repo
-   look "real" to anyone who lands on it mid-build.
-2. **External kick-off** (15 min, parallel): T21, T24, T25.
-3. **`package.json` + extraction** (50 min): T4, T7 — unblocks everything.
-4. **Core implementation** (~3 h): T8, T9 — the bulk of the work.
-5. **Cache + postinstall** (~1.5 h): T10, T11, T12.
-6. **Tests + README + CI** (~2 h, parallel within): T13–T19.
-7. **Git + push + verify CI** (30 min): T20, T22, T23.
-8. **Ship** (~15 min + CI time): T26, T27, T28, T29.
+**≈ 7–8 hours of focused work** to ship v0.1.0, assuming no surprises.
+T29 (fresh-Mac install) is the most likely place for unknown bugs; the
+"works on my machine" gap is real for this kind of multi-engine setup.
 
 ### Risks & mitigations
 
 | Risk                                                                  | Mitigation                                                                                       |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `@ilyavorobiev` scope unavailable on npm                              | Have a fallback name ready (e.g. `@ilya-vorobiev/transcribe`). Decided at T24.                   |
-| `macos-latest` runner switches arch mid-stream                        | Pin to a specific runner label (`macos-14` for ARM) in T18.                                      |
-| HuggingFace changes the download path again                           | T9 includes HEAD-check + size verification; falls back to clear error with manual URL.           |
-| Postinstall fails in some user environments                           | T11 makes it strictly best-effort; T17 README mentions opt-out env var prominently.              |
+| `macos-latest` runner switches arch mid-stream                        | Pin to a specific runner label (`macos-14`+ for ARM) in T18.                                     |
+| HuggingFace S3 redirect format changes again                          | All downloads use curl with `--fail`; failed downloads raise, never silently truncate.            |
+| Postinstall fails in some user environments                           | T11 is skip-only behavior; never builds or downloads. README/CONTRIBUTING document opt-out env var. |
 | First publish goes out with a broken `files` list                     | T26 dry-run is a hard gate before T27.                                                           |
-| `bun publish` API differences across Bun versions                     | Pin `oven-sh/setup-bun@v2` and a specific `bun-version` in T19; document it in CONTRIBUTING.md.  |
+| `bun publish` API differences across Bun versions                     | Pin `oven-sh/setup-bun@v2` + a specific `bun-version` in T19; document in CONTRIBUTING.md.       |
+| Fresh-Mac smoke (T29) hits engine-specific bug we missed              | gigaam already cost us 6 bug-fix rounds (specs/gigaam/spec.md §11). Budget for similar pain.     |
+| Cache dir migration breaks the author's local setup during T10        | T10b's backwards-compat (prefer existing `<repo>/models` if present) keeps the dev loop working. |
+| Package size on npm too large because we forgot to gitignore something | `files` allowlist + `.npmignore` + T26 dry-run = three gates.                                    |
 
 ## 9. Alternatives Not Chosen
 
@@ -523,3 +669,64 @@ Keeps visible progress and the critical path moving:
 - Postinstall script concerns (background reading): <https://overreacted.io/npm-audit-broken-by-design/>
 - GitHub Actions for macOS: <https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners>
 - whisper.cpp models index: <https://huggingface.co/ggerganov/whisper.cpp>
+- Related specs (now implemented):
+  - [`../mlx-russian/spec.md`](../mlx-russian/spec.md) — MLX engine + antony66/bond005
+  - [`../gigaam/spec.md`](../gigaam/spec.md) — GigaAM engine + 6 bug fixes
+  - [`../cli/spec.md`](../cli/spec.md) — original whisper.cpp-only v0.1
+
+## 11. Implementation Notes (post-spec drift)
+
+This spec was originally written when the project was a whisper.cpp-only
+CLI with 23 tests and a single `scripts/setup.sh`. Since then:
+
+### What changed before publish work started
+
+- **Two new engines** landed (`mlx-russian/`, `gigaam/`), each its own
+  spec, each with field findings documenting the bugs hit. The CLI now
+  has 3 engines behind a unified interface.
+- **Setup grew** from a single bash script to an orchestrator
+  (`setup-all.sh`) plus 4 helpers (`setup-mlx.sh`, `setup-cpp.sh`,
+  `convert-hf-to-mlx.sh`, `download-hf-model.sh`) plus 1 Python script
+  (`gigaam_transcribe.py`). Disk footprint grew from ~3 GB to ~20 GB.
+- **`scripts/setup.sh` was renamed** to `scripts/setup-cpp.sh`.
+- **`bun run setup`** now points at the orchestrator. Was originally
+  going to be a TS subcommand handler (`src/commands/setup.ts`) per the
+  original §6.4. The bash-script-orchestrator approach proved simpler
+  and is what's in production; the publish work needs to **wire that
+  into a `transcribe setup` subcommand** (T8) without re-implementing it.
+- **55 tests** across 6 files (up from 23). Engine wrappers added
+  significant test surface.
+
+### What this changes about the publish plan
+
+- **T7 (extract `commands/transcribe.ts`)** is satisfied by the engine
+  refactor — the "main flow" is now the `Engine` interface + per-engine
+  files. No further refactor needed for publish.
+- **T9 (implement `commands/setup.ts`)** is satisfied by the existing
+  bash orchestrator. The remaining work is exposing it as `transcribe
+  setup` (T8 subcommand routing).
+- **T10 (cache directory)** is now MORE important, not less. With 4
+  model families (~16 GB), a `bun update -g` that wipes them is a
+  real-world disaster.
+- **T11 (postinstall)** is downgraded. The original spec had it
+  attempting a whisper.cpp build during `bun install`. With Python
+  install + mlx + 3 engines, that's catastrophically hostile. New
+  postinstall is **skip-only**: prints a banner, exits 0.
+- **T14 (`setup.ts` arg parsing tests)** is dropped — setup is bash;
+  smoke tests cover the orchestrator end-to-end. Unit-testing bash
+  argv would be wasted complexity.
+- **T29 (fresh-Mac smoke)** is more important than originally captured.
+  Three engines means three places where "works on author's machine"
+  might not transfer.
+
+### Pin-policy commitment
+
+The `gigaam` engine requires `transformers>=4.40,<4.50` (see
+`gigaam/spec.md` §11 Field finding #3). When transformers 5.0 lands or
+when the GigaAM model's `trust_remote_code` modeling gets updated to be
+compatible with meta-device init, we'll loosen this pin. **That's a
+real CHANGELOG entry** — not a silent dep bump.
+
+Similar pins likely needed for `mlx-whisper` (currently floats; no
+known breakage), `pyannote.audio` (needed-but-unused), `torchaudio`
+(API drift cost us bug #4 in gigaam). Document each in CONTRIBUTING.md.
