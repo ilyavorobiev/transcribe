@@ -32,11 +32,11 @@ jobs:
       - name: Tests
         run: bun run test
 
-      # Sanity gate: dry-run shows the exact file list that will hit npm.
-      # If files/.npmignore drift, this catches it before a bad publish.
-      - name: Publish dry-run
-        run: bun publish --dry-run --access public
-
+      # Note: no separate `bun publish --dry-run` step. bun's dry-run
+      # requires auth in CI (returns exit 1 without it), and the real
+      # publish below does identical packing — a packing failure would
+      # surface there. Local pre-tag dry-runs are recommended in
+      # CONTRIBUTING.md.
       - name: Publish to npm
         env:
           NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
